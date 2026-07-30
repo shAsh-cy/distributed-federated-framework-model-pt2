@@ -1,6 +1,37 @@
-flwr==1.7.0
-torch==2.0.1
-torchvision==0.15.2
-numpy
-pillow
-tqdm
+# Runtime dependencies. Every version pinned exactly.
+#
+# IMPORTANT: tensorflow-federated declares an exact pin `jaxlib==0.4.14`, and that
+# release has been REMOVED from PyPI (the oldest jaxlib on PyPI is now 0.4.18).
+# Installing from PyPI alone is therefore unsatisfiable at every TFF version, and an
+# unpinned `pip install tensorflow-federated` silently back-tracks to the 2019
+# placeholder 0.1.0, which contains none of the federated API.
+#
+# The --find-links line below restores jaxlib 0.4.14 from Google's historical index
+# and is REQUIRED. Do not remove it.
+#
+# Platform note: TFF ships Linux-only wheels (manylinux_2_31_x86_64) and requires
+# Python >=3.9,<3.12. Use Python 3.10 on Linux, WSL2, or the provided Docker images.
+--find-links https://storage.googleapis.com/jax-releases/jax_releases.html
+
+# --- Federated learning stack ---
+tensorflow==2.14.1
+tensorflow-federated==0.87.0
+tensorflow-privacy==0.9.0
+
+# --- Privacy accounting ---
+dp-accounting==0.4.3
+
+# --- Transport (custom gRPC control plane) ---
+grpcio==1.74.0
+grpcio-tools==1.62.3
+protobuf==4.25.9
+
+# --- Core numerics / config ---
+numpy==1.25.2
+PyYAML==6.0.3
+
+# --- Pinned transitively by TFF; recorded here so the resolution is reproducible ---
+jax==0.4.14
+jaxlib==0.4.14
+keras==2.14.0
+typing-extensions==4.5.0

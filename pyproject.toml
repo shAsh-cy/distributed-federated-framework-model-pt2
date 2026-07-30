@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "federated-learning-starter"
+version = "0.2.0"
+description = "Federated learning on Fashion-MNIST with TensorFlow Federated, a custom gRPC control plane, and client-level differential privacy."
+requires-python = ">=3.10,<3.12"
+
+[tool.setuptools.packages.find]
+include = ["fl*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+markers = [
+    "slow: tests that train a model or start a real gRPC server",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.coverage.run]
+source = ["fl"]
+omit = ["*_pb2.py", "*_pb2_grpc.py", "fl/proto/_generate.py"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+exclude = ["*_pb2.py", "*_pb2_grpc.py"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4"]
+ignore = ["E501"]
