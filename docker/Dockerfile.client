@@ -1,0 +1,8 @@
+FROM python:3.10-slim
+WORKDIR /app
+COPY ../requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
+COPY ../client.py /app/client.py
+COPY ../model.py /app/model.py
+COPY ../utils.py /app/utils.py
+CMD ["python","/app/client.py","--cid","0","--num-clients","2"]
