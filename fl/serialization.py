@@ -31,9 +31,7 @@ class SerializationError(ValueError):
 def weights_to_proto(weights: Weights, names: list[str] | None = None) -> fl_comm_pb2.ModelWeights:
     """Encode a Keras weight list as a ``ModelWeights`` message."""
     if names is not None and len(names) != len(weights):
-        raise SerializationError(
-            f"got {len(names)} names for {len(weights)} tensors"
-        )
+        raise SerializationError(f"got {len(names)} names for {len(weights)} tensors")
     msg = fl_comm_pb2.ModelWeights()
     for i, w in enumerate(weights):
         arr = np.ascontiguousarray(np.asarray(w, dtype=WIRE_DTYPE))

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import math
 from pathlib import Path
 
@@ -112,9 +113,7 @@ def test_dp_enabled_with_zero_noise_is_rejected():
 
 def test_quorum_above_client_count_rejected():
     with pytest.raises(ConfigError, match="no round could ever reach quorum"):
-        Config.from_dict(
-            {"data": {"num_clients": 2}, "server": {"min_clients_per_round": 5}}
-        )
+        Config.from_dict({"data": {"num_clients": 2}, "server": {"min_clients_per_round": 5}})
 
 
 def test_sampled_clients_below_quorum_rejected():
@@ -185,5 +184,5 @@ def test_replace_unknown_section_rejected():
 
 def test_config_is_frozen():
     cfg = Config()
-    with pytest.raises(Exception):
+    with pytest.raises(dataclasses.FrozenInstanceError):
         cfg.seed = 1

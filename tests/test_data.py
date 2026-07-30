@@ -205,9 +205,7 @@ def test_lower_alpha_produces_more_skew(fashion):
     """Monotonicity in alpha is the property that makes it a meaningful knob."""
     train, _ = fashion
     skews = [
-        _max_total_variation(
-            train.y, partition(train.y, 10, scheme="dirichlet", alpha=a, seed=42)
-        )
+        _max_total_variation(train.y, partition(train.y, 10, scheme="dirichlet", alpha=a, seed=42))
         for a in (100.0, 1.0, 0.1)
     ]
     assert skews[0] < skews[1] < skews[2]
@@ -230,7 +228,7 @@ def test_partition_is_deterministic_given_a_seed(fashion, scheme):
     train, _ = fashion
     a = partition(train.y, 10, scheme=scheme, alpha=0.5, seed=99)
     b = partition(train.y, 10, scheme=scheme, alpha=0.5, seed=99)
-    for x, y in zip(a, b):
+    for x, y in zip(a, b, strict=False):
         np.testing.assert_array_equal(x, y)
 
 
@@ -239,7 +237,7 @@ def test_different_seeds_give_different_partitions(fashion, scheme):
     train, _ = fashion
     a = partition(train.y, 10, scheme=scheme, alpha=0.5, seed=1)
     b = partition(train.y, 10, scheme=scheme, alpha=0.5, seed=2)
-    assert any(not np.array_equal(x, y) for x, y in zip(a, b))
+    assert any(not np.array_equal(x, y) for x, y in zip(a, b, strict=False))
 
 
 def test_shards_are_sorted(fashion):
@@ -283,6 +281,6 @@ def test_partition_summary_reports_per_client_label_counts(fashion):
     summary = partition_summary(train.y, shards)
     assert len(summary) == 5
     assert sum(row["num_examples"] for row in summary) == len(train)
-    for row, shard in zip(summary, shards):
+    for row, shard in zip(summary, shards, strict=False):
         assert sum(row["label_counts"]) == shard.size
         assert row["num_classes_present"] == sum(1 for c in row["label_counts"] if c > 0)

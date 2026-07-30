@@ -68,9 +68,7 @@ def build_small_cnn(seed: int | None = None) -> tf.keras.Model:
             ),
             tf.keras.layers.MaxPooling2D(2, name="pool2"),
             tf.keras.layers.Flatten(name="flatten"),
-            tf.keras.layers.Dense(
-                128, activation="relu", kernel_initializer=init(), name="dense1"
-            ),
+            tf.keras.layers.Dense(128, activation="relu", kernel_initializer=init(), name="dense1"),
             tf.keras.layers.Dense(NUM_CLASSES, kernel_initializer=init(), name="logits"),
         ],
         name="small_cnn",
@@ -85,9 +83,7 @@ def build_model(name: str = "small_cnn", seed: int | None = None) -> tf.keras.Mo
     try:
         builder = _BUILDERS[name]
     except KeyError:
-        raise ValueError(
-            f"unknown model {name!r}; available: {sorted(_BUILDERS)}"
-        ) from None
+        raise ValueError(f"unknown model {name!r}; available: {sorted(_BUILDERS)}") from None
     return builder(seed=seed)
 
 

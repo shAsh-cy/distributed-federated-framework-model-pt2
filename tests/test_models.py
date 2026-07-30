@@ -48,14 +48,14 @@ def test_same_seed_gives_identical_initial_weights():
     """The server builds the initial global model from the seed alone."""
     a = build_small_cnn(seed=123).get_weights()
     b = build_small_cnn(seed=123).get_weights()
-    for wa, wb in zip(a, b):
+    for wa, wb in zip(a, b, strict=False):
         np.testing.assert_array_equal(wa, wb)
 
 
 def test_different_seeds_give_different_initial_weights():
     a = build_small_cnn(seed=1).get_weights()
     b = build_small_cnn(seed=2).get_weights()
-    assert any(not np.array_equal(wa, wb) for wa, wb in zip(a, b))
+    assert any(not np.array_equal(wa, wb) for wa, wb in zip(a, b, strict=False))
 
 
 def test_weights_round_trip_through_set_weights():
@@ -63,7 +63,7 @@ def test_weights_round_trip_through_set_weights():
     original = model.get_weights()
     perturbed = [w + 0.5 for w in original]
     model.set_weights(perturbed)
-    for got, want in zip(model.get_weights(), perturbed):
+    for got, want in zip(model.get_weights(), perturbed, strict=False):
         np.testing.assert_allclose(got, want, rtol=0, atol=0)
 
 

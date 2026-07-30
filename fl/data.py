@@ -57,7 +57,9 @@ def load_fashion_mnist() -> tuple[Dataset, Dataset]:
     return _prepare(x_train, y_train), _prepare(x_test, y_test)
 
 
-def partition_iid(num_examples: int, num_clients: int, rng: np.random.Generator) -> list[np.ndarray]:
+def partition_iid(
+    num_examples: int, num_clients: int, rng: np.random.Generator
+) -> list[np.ndarray]:
     """Split indices uniformly at random.
 
     Every client's shard is an unbiased sample of the global distribution, so all

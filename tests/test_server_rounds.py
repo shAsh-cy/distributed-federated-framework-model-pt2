@@ -227,7 +227,7 @@ def test_below_quorum_keeps_the_previous_global_model():
         assert m.num_reported == 0
         assert m.aggregated is False
         assert h.server.model_version == 0
-        for a, b in zip(h.server.global_weights(), before):
+        for a, b in zip(h.server.global_weights(), before, strict=False):
             np.testing.assert_array_equal(a, b)
 
 
