@@ -1,0 +1,39 @@
+# Headline configuration: 10 clients, non-IID, no differential privacy.
+# This is the baseline the DP runs are compared against.
+seed: 42
+
+data:
+  dataset: fashion_mnist
+  num_clients: 10
+  # Non-IID by default. An IID split removes the central difficulty of federated
+  # learning -- with identically distributed shards, local updates all point the
+  # same way and FedAvg degenerates to slightly noisy centralised SGD.
+  partition: dirichlet
+  # Lower alpha => more label skew. 0.5 gives clients that are clearly skewed but
+  # still see most classes; 0.1 produces near-pathological shards.
+  dirichlet_alpha: 0.5
+
+model:
+  name: small_cnn
+
+training:
+  rounds: 20
+  client_fraction: 0.5
+  local_epochs: 1
+  batch_size: 32
+  learning_rate: 0.01
+  momentum: 0.9
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+  round_deadline_seconds: 120.0
+  min_clients_per_round: 2
+  registration_timeout_seconds: 300.0
+  max_message_mb: 128
+
+privacy:
+  enabled: false
+  l2_clip_norm: 1.0
+  noise_multiplier: 0.0
+  delta: 1.0e-5
