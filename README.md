@@ -1,343 +1,327 @@
-# Federated Learning on Fashion-MNIST — TensorFlow Federated + gRPC + client-level DP
+# Federated Learning on Fashion-MNIST — TFF + gRPC + client-level DP
 
-A working federated learning system: a gRPC control plane that coordinates real
-FedAvg rounds over a non-IID split of Fashion-MNIST, with client-level
-differential privacy applied through TensorFlow Federated and epsilon computed by
-TensorFlow Privacy's accountant.
+Trains a shared image classifier across several containerised clients that never
+send their training data anywhere. Coordination runs over a real gRPC protocol;
+differential privacy is applied at aggregation through TensorFlow Federated, and
+the privacy budget is computed rather than asserted.
 
-Everything reported below was produced by running the code in this repository.
-The numbers are in [results/](results/) and reproducible with one command.
-
----
-
-## Install — read this first
-
-`tensorflow-federated` cannot be installed from PyPI alone, at any version.
-
-It pins `jaxlib==0.4.14` exactly, and **that release has been removed from PyPI**
-(the oldest jaxlib now on PyPI is 0.4.18). The failure is worse than an error:
-an unpinned `pip install tensorflow-federated` does not fail, it back-tracks past
-every real release and installs `tensorflow-federated==0.1.0` — a 2019 placeholder
-containing none of the federated API. You end up with a package of the right name
-and no working `tff.aggregators`.
-
-`requirements.txt` fixes this with a `--find-links` line pointing at Google's
-historical jax index, which still serves jaxlib 0.4.14. **That line is
-load-bearing; do not remove it.**
-
-```bash
-python3.10 -m venv .venv && source .venv/bin/activate
-pip install -r requirements-dev.txt     # includes requirements.txt
-```
-
-Platform constraints, both hard:
-
-| Constraint | Value | Why |
-|---|---|---|
-| Python | `>=3.9,<3.12` — use **3.10** | TFF's own `requires_python` |
-| OS | **Linux only** | TFF ships one wheel per release: `manylinux_2_31_x86_64`. There is no Windows or macOS wheel at any version. |
-
-On Windows or macOS, use the Docker path below or WSL2. This is not a
-preference — the wheel does not exist.
-
-The exact resolved version matrix, verified on Python 3.10 / linux-amd64:
-
-```
-tensorflow==2.14.1          tensorflow-federated==0.87.0    tensorflow-privacy==0.9.0
-tensorflow-probability==0.22.1   tensorflow-estimator==2.14.0    keras==2.14.0
-jax==0.4.14                 jaxlib==0.4.14                  numpy==1.25.2
-protobuf==4.25.9            grpcio==1.74.0                  typing-extensions==4.5.0
-```
-
-That last pin is why configuration uses dataclasses rather than pydantic: TFF
-requires `typing-extensions==4.5.*`, and pydantic v2 requires `>=4.6.1`. They
-cannot coexist.
+Every number below was measured by running this code. The raw per-round metrics
+are committed in [`results/`](results/).
 
 ---
 
-## Results
+## The problem this solves
 
-Three configurations, identical in every respect except the privacy block —
-same seed, same model, same partition, same 20 rounds. Produced by
-`scripts/run_all_experiments.sh`; raw per-round metrics in [results/](results/).
+Ten parties each hold a private slice of a labelled image dataset. Individually
+none has enough data to train a good classifier; none is willing to hand its raw
+data to a central server.
 
-Fashion-MNIST, 10 clients, Dirichlet non-IID (α = 0.5), C = 0.5 (5 clients
-sampled per round), 20 rounds, seed 42. Untrained baseline: **12.25%**.
+Federated averaging resolves that: the server sends the current model out, each
+party trains on its own data locally, and only the resulting **weights** come
+back. The server averages them, weighted by how many samples each party trained
+on, and repeats.
 
-| configuration | noise `z` | ε at δ=1e-5 | **final accuracy** | dropped client-rounds | wall clock |
-|---|---|---|---|---|---|
-| no DP | — | ∞ (no guarantee) | **86.93%** | 0 / 100 | 102 s |
-| moderate noise | 2.0 | **6.228** | **10.00%** | 85 / 100 | 112 s |
-| high noise | 6.0 | **1.639** | **10.00%** | 90 / 100 | 118 s |
+Two properties make this concrete rather than a slogan, and both are enforced in
+code here:
 
-Every run transferred exactly 90.0 MB in each direction — 20 rounds × 5 clients
-× 900,254 bytes, matching the documented model size.
+- **Raw data never leaves a client.** Clients receive training indices only; the
+  server holds the test set and never ships it out.
+- **The parties' data is not identically distributed.** The default split is
+  Dirichlet label-skew (α = 0.5), producing shards of 1,816–11,815 samples with
+  very different label mixes. An IID split would make every client's gradient an
+  unbiased estimate of the same global gradient and reduce federated averaging to
+  slightly noisy centralised SGD — the hard part would vanish.
 
-Without DP the model reaches 86.93% (peak 87.69%), climbing from 69.9% after
-round 1. **Both DP configurations collapse to 10.00% — the accuracy of guessing.**
-That is not a bug, and the next section explains exactly why.
-
-### Reading the DP results honestly
-
-The DP runs destroy the model. That is the correct outcome for this
-configuration, and the reason is arithmetic rather than a bug.
-
-Client-level DP adds Gaussian noise with standard deviation `z·S` to the *sum* of
-clipped updates, then divides by the cohort size `m`. The signal — the mean
-clipped update — has L2 norm at most `S`. The noise has expected L2 norm
-`z·S·√d / m`, where `d` is the parameter count. So the noise-to-signal ratio is
-
-```
-    z · √d / m          independent of the clipping norm S
-```
-
-With `d = 225,034` (√d ≈ 474) and `m = 5` clients per round:
-
-| configuration | z | noise / signal |
-|---|---|---|
-| moderate | 2.0 | **190×** |
-| high | 6.0 | **569×** |
-
-Measured directly (`||noisy mean delta||` for a unit-signal input): 569.9 against
-a predicted 569.3 for the moderate setting — the mechanism is doing exactly what
-the theory says. The update is ~190 parts noise to 1 part signal, so the model
-diverges within a round or two and accuracy collapses to the 10% of random
-guessing.
-
-**The real conclusion:** client-level DP needs `m ≳ z·√d`. For this model and
-`z = 2`, that is roughly **950 clients per round** — not 5. This is precisely why
-production DP federated learning uses cohorts of thousands. With 10 clients there
-is no noise multiplier that buys both a meaningful epsilon and a usable model:
-getting the ratio near 1 requires `z ≈ 0.01`, at which epsilon is astronomically
-large and the guarantee is vacuous.
-
-Reporting this is more useful than tuning until a chart looks good. Epsilon here
-is computed from the mechanism, never chosen, so the guarantee is real — and at
-this scale the price of that guarantee is the entire model.
+Averaging weights still leaks information about the data that produced them, so
+the aggregation step optionally applies **client-level differential privacy**:
+each client's contribution is clipped and Gaussian noise is added before the
+average is released.
 
 ---
 
 ## Architecture
 
+```mermaid
+flowchart TB
+    subgraph clients["Clients — one container each, one private shard each"]
+        direction LR
+        D1[("Shard 1<br/>raw images")]
+        C1["Client 1<br/>local Keras training"]
+        DN[("Shard N<br/>raw images")]
+        CN["Client N<br/>local Keras training"]
+        D1 --> C1
+        DN --> CN
+    end
+
+    subgraph server["Server — one container"]
+        direction TB
+        RX["gRPC servicer<br/>register · serve model · accept update<br/>deadline + staleness checks"]
+        AGG["FedAvg aggregator<br/>weighted by client sample count<br/>fl/aggregation.py"]
+        DP["Client-level DP aggregation<br/>clip to S, add N(0, (z·S)²), mean<br/>TensorFlow Federated"]
+        GM["Global model + version"]
+        TEST[("Held-out test set")]
+        EV["Evaluate every round"]
+        RX --> AGG
+        AGG --> DP
+        DP --> GM
+        GM --> EV
+        TEST --> EV
+    end
+
+    C1 -->|"weights + sample count + model version"| RX
+    CN -->|"weights + sample count + model version"| RX
+    GM -->|"global weights + version"| C1
+    GM -->|"global weights + version"| CN
+
+    D1 --x|"raw images: never transmitted"| server
+    DN --x|"raw images: never transmitted"| server
+    TEST --x|"test set: never transmitted"| clients
 ```
-fl/
-  config.py         Typed, validated configuration. One frozen object, loaded from YAML.
-  models.py         Keras CNN (225,034 parameters, documented and asserted).
-  data.py           Fashion-MNIST loading; IID and Dirichlet non-IID partitioning.
-  aggregation.py    FedAvg arithmetic; TFF-backed DP aggregation; epsilon accounting.
-  serialization.py  Weight list <-> protobuf, with validation on every decode.
-  server.py         gRPC coordinator: sampling, round barrier, evaluation, metrics.
-  client.py         gRPC participant: registers, trains its shard, reports.
-  proto/
-    fl_comm.proto   Versioned wire format. Generated stubs are NOT committed.
-configs/            default.yaml, dp_moderate.yaml, dp_high.yaml, docker.yaml
-scripts/            run_experiment.py, run_all_experiments.sh, summarise_results.py
-tests/              See "Tests" below.
-results/            Committed metrics from real runs.
-```
 
-### What happens in a round
+Links ending in **✕** are the paths that deliberately do not exist: no client
+data reaches the server, and no test data reaches a client. Only model weights,
+a sample count and a model version cross the wire.
 
-1. The server samples `ceil(C · N)` of the registered clients. Partial
-   participation is what makes this federated rather than merely distributed.
-2. It publishes the global weights together with their `model_version`.
-3. A barrier opens with a wall-clock deadline.
-4. Clients train locally and submit weights, their **sample count**, and the
-   **model version they trained from**.
-5. At the barrier the server aggregates what arrived, drops and logs the rest,
-   evaluates on the held-out test set, and increments `model_version`.
+**One round:** the server samples a fraction `C` of registered clients → publishes
+the global weights and their version → opens a barrier with a wall-clock deadline
+→ aggregates whatever arrived, dropping and logging the rest → evaluates on the
+held-out test set → increments the model version.
 
-The deadline is enforced, not advisory: a server that blocks on its slowest
-participant has no availability story. Drops are logged individually.
-
-Two version numbers travel on the wire and are deliberately distinct:
-`protocol_version` (schema, checked once at registration) and `model_version`
-(which global model an update was trained from, checked on every update). An
-update trained from model *N* is only valid input to the aggregation producing
-*N+1*; anything else is rejected with `REJECTED_STALE_MODEL`.
-
-### Data handling
-
-- **The test set never leaves the server.** Clients receive training indices
-  only, so a client physically cannot evaluate on held-out data.
-- **Non-IID by default.** An IID split makes every client's gradient an unbiased
-  estimate of the same global gradient, so FedAvg degenerates into mildly noisy
-  centralised SGD and the client-drift problem disappears. `dirichlet_alpha`
-  controls the skew; at the default 0.5, shard sizes range 1,816–11,815.
-- Both splits are tested for three invariants: shards are pairwise disjoint,
-  their union is exactly the 60,000-sample training set, and no held-out test
-  image appears in any client shard (checked by hashing pixels, not by comparing
-  indices).
+The deadline is enforced, not advisory; a server that blocks on its slowest
+participant has no availability story. An update trained from model *N* is only
+valid input to the aggregation producing *N+1*, so stale submissions are rejected
+rather than folded in.
 
 ---
 
-## Running it
+## Why both TensorFlow Federated and a custom gRPC layer
 
-### Locally (Linux / WSL2, Python 3.10)
+They do different jobs, and neither alone covers this project.
 
-```bash
-python -m fl.server --config configs/default.yaml --metrics-out results/run.json
-python -m fl.client --config configs/default.yaml --server 127.0.0.1:8080   # xN
+**TensorFlow Federated provides the differentially private aggregation.** The DP
+path wraps `tff.aggregators.DifferentiallyPrivateFactory.gaussian_fixed` into a
+real `tff.templates.AggregationProcess` whose state is carried across rounds — TFF
+does the clipping and noise, not a hand-rolled approximation of it. Using TFF's
+own type system also surfaces a constraint that is easy to get wrong: the factory
+returns an `UnweightedAggregationFactory`, because a sensitivity bound only holds
+if every client is weighted equally.
+
+**A custom gRPC layer provides the distribution.** TFF's simulation runtime
+executes every client inside a single process. That is ideal for validating a
+federated *algorithm*, and useless for demonstrating a federated *system*: in one
+process there is no registration handshake, no wire format, no round deadline, no
+straggler to drop, no stale update to reject, and no bytes-on-the-wire figure to
+measure. This repository needed all of those, so the transport is a versioned
+`.proto` and a real gRPC server that separate containers connect to over the
+network.
+
+**Precisely who does what**, since this is the claim a reviewer should check:
+
+| Component | Provided by |
+|---|---|
+| FedAvg weighted average | this repo — `fl/aggregation.py` |
+| DP clipping, Gaussian noise, aggregation state | TensorFlow Federated |
+| ε accounting (RDP, Poisson-subsampled Gaussian) | `dp_accounting`, from TensorFlow Privacy |
+| Registration, round barrier, deadlines, staleness, transport | this repo — `fl/proto/`, `fl/server.py`, `fl/client.py` |
+| Model, data loading, non-IID partitioning | this repo — `fl/models.py`, `fl/data.py` |
+
+---
+
+## Results
+
+Fashion-MNIST · 10 clients · Dirichlet non-IID (α = 0.5) · C = 0.5 (5 clients
+sampled per round) · 20 rounds · seed 42 · 225,034-parameter CNN. The three
+configurations differ **only** in their privacy block.
+
+| Configuration | Noise `z` | Clip `S` | δ | **ε (computed)** | **Test accuracy** |
+|---|---|---|---|---|---|
+| No DP | — | — | — | — (no guarantee) | **86.93 %** |
+| Moderate noise | 2.0 | 3.0 | 1 × 10⁻⁵ | **6.228** | **10.00 %** |
+| High noise | 6.0 | 3.0 | 1 × 10⁻⁵ | **1.639** | **10.00 %** |
+
+Untrained baseline: **12.25 %**. Without DP the model peaks at 87.69 % and ends
+at 86.93 %. Every run moved 90,025,400 bytes server→client — exactly 20 rounds ×
+5 clients × 900,254 bytes, the serialised size of the model — and 90,029,290
+bytes back, the small excess being the sample count and version fields each
+update carries. Reproduce with `./scripts/run_all_experiments.sh`.
+
+ε is computed from the noise multiplier, the client sampling rate (q = 0.5) and
+the round count — it is never chosen. See `fl.aggregation.compute_epsilon`.
+
+### Why both DP runs collapse to chance
+
+This is the honest result at this scale, and it is arithmetic rather than a bug.
+DP adds noise of expected L2 norm `z·S·√d / m` to a signal whose norm is at most
+`S`, so the noise-to-signal ratio is
+
+```
+z · √d / m          (independent of the clipping norm S)
 ```
 
-Or both at once:
+With d = 225,034 parameters (√d ≈ 474) and m = 5 clients per round that is **190×**
+at z = 2 and **569×** at z = 6. Measured directly against a unit-signal input:
+569.9 observed versus 569.3 predicted. The update is essentially all noise, the
+model diverges within two rounds, and accuracy falls to the 10 % of guessing.
+
+Usable client-level DP on this model needs **m ≳ z·√d**, roughly 950 clients per
+round rather than 5 — which is why production deployments use cohorts of
+thousands. At 10 clients there is no noise multiplier that yields both a
+meaningful ε and a working model: pushing the ratio near 1 requires z ≈ 0.01, at
+which ε is astronomically large and the guarantee is vacuous.
+
+---
+
+## Quickstart
+
+### Docker — works from a clean clone on any host with Docker
 
 ```bash
-./run_local.sh configs/default.yaml 10
-```
-
-Clients take no `--cid`. A client that registers without an id is assigned the
-next free shard by the server, so starting N clients claims N distinct shards
-with no per-client configuration. That is what makes `--scale` work.
-
-### Docker
-
-```bash
+git clone <repository-url>
+cd federated-learning-starter
 docker compose -f docker/docker-compose.yml up --build --scale client=5
 ```
 
-Verified working: 5 rounds to **77.13%** test accuracy, five clients and the
-server all exiting 0.
+That builds one image, starts a server and five client containers, and runs 5
+rounds to roughly 77 % accuracy (`configs/docker.yaml`). Verified end to end from
+a fresh clone; the server writes `/app/results/docker_run.json` and every
+container exits 0.
 
-`client` is one scalable service rather than hardcoded `client0`/`client1`.
-Replicas need no per-replica configuration — a client that registers without an
-id is assigned the next free shard, so five replicas claim five distinct shards
-on their own. `configs/docker.yaml` declares `num_clients: 5` to match; scaling
-beyond it is refused by the server (`all 5 shards already claimed`) rather than
-silently double-counting a shard.
+Clients take no `--cid`. A client registering without an id is assigned the next
+free shard, so N replicas claim N distinct shards with no per-replica config —
+that is what makes `--scale` work. `configs/docker.yaml` declares
+`num_clients: 5`; starting more is refused (`all 5 shards already claimed`)
+rather than silently double-counting a shard.
 
-### Reproducing the recorded results
+### Local — Linux or WSL2, Python 3.10
+
+> **The `--find-links` line in `requirements.txt` is load-bearing.**
+> `tensorflow-federated` pins `jaxlib==0.4.14` exactly, and that release has been
+> removed from PyPI. Worse than an error: an unpinned
+> `pip install tensorflow-federated` does not fail, it back-tracks to the 2019
+> placeholder `0.1.0`, which contains none of the federated API. The
+> `--find-links` line restores jaxlib from Google's historical index.
+>
+> **TFF is Linux-only** (`manylinux_2_31_x86_64`, no Windows or macOS wheel at any
+> version) and requires Python `>=3.9,<3.12`. Use Docker or WSL2 elsewhere.
 
 ```bash
-./scripts/run_all_experiments.sh     # writes results/*.json, prints the table
+python3.10 -m venv .venv && source .venv/bin/activate
+pip install -r requirements-dev.txt          # includes requirements.txt
+
+./run_local.sh configs/default.yaml 10       # server + 10 clients, 20 rounds
 ```
 
-Seeded throughout: Python, NumPy and TensorFlow RNGs, the partition, the initial
-model, and the server's client sampling all derive from `config.seed`. Non-DP
-accuracy is deterministic up to floating-point summation order. DP runs are
-reproducible in configuration but not bit-identical, because the Gaussian noise
-is drawn inside TFF's aggregation process and thread scheduling determines
-arrival order.
+Or run the pieces separately:
 
----
+```bash
+python -m fl.server --config configs/default.yaml --metrics-out results/run.json
+python -m fl.client --config configs/default.yaml --server 127.0.0.1:8080   # ×N
+```
 
-## Configuration
+Reproduce the three recorded runs, then print the comparison table:
 
-One typed, frozen object; nothing else reads environment variables or hard-codes
-a hyperparameter. Validation is strict on purpose:
+```bash
+./scripts/run_all_experiments.sh
+```
 
-- **Unknown keys are errors.** A silently ignored `noise_multipler` typo would
-  otherwise produce a run that claims privacy it does not have.
-- **Cross-field checks.** Sampling fewer clients than the quorum requires is
-  rejected at load time rather than failing every round at runtime.
-- **`privacy.enabled` with `noise_multiplier: 0` is refused** — that combination
-  claims a guarantee while providing none.
-- **Epsilon is not a config field.** It is computed from the noise multiplier,
-  the client sampling rate and the round count. See
-  `fl.aggregation.compute_epsilon`.
+gRPC stubs are generated on import from `fl/proto/fl_comm.proto`, so there is no
+separate build step and the `.proto` stays the single source of truth.
 
----
-
-## Differential privacy
-
-The granularity is **client-level** (user-level): the protected unit is one
-participant's entire local dataset, so the guarantee concerns whether a given
-client took part at all.
-
-This is **not example-level DP**. Example-level DP — what DP-SGD inside a single
-trainer provides — protects one training row and says nothing about
-participation. Conflating the two overstates the guarantee. Here `l2_clip_norm`
-bounds one client's whole round update, which is what makes the client-level
-claim true.
-
-Two implementation details that are easy to get wrong, both deliberate:
-
-1. **DP is applied to the delta `w_k − w_global`, never to raw weights.**
-   Clipping raw weights to a norm of ~3 would annihilate a trained model.
-   Clipping the round's update bounds exactly the quantity a client contributes,
-   which is what the sensitivity argument requires.
-
-2. **The DP path is *unweighted*, unlike plain FedAvg.** A DP guarantee needs a
-   bound on how much one client can move the released value. Clipping to `S`
-   gives sensitivity `S` only if every client is then weighted equally; under
-   sample-count weighting a client's influence is `n_k/Σn · S`, which depends on
-   its own private shard size, so the sensitivity is no longer a constant the
-   accountant can use. TFF encodes this in its type system — 
-   `DifferentiallyPrivateFactory` returns an `UnweightedAggregationFactory`.
-   **Enabling DP therefore costs sample-count weighting as well as accuracy**,
-   which on an unequal non-IID split are two distinct penalties.
-
-Epsilon is computed with the RDP accountant from `dp_accounting` (the accountant
-library maintained by the TensorFlow Privacy team), composing `rounds`
-Poisson-subsampled Gaussian mechanisms at `delta = 1e-5`. Zero noise returns
-`inf`, not a large finite number.
-
----
-
-## Tests
+### Tests
 
 ```bash
 pytest --cov=fl --cov-report=term-missing
 ```
 
-**208 tests, 89% statement coverage**, run on every push by GitHub Actions
-alongside `ruff check` and `ruff format --check`.
+**208 tests, 89 % statement coverage**, run on every push by GitHub Actions
+alongside `ruff check` and `ruff format --check`. Four areas, one file each:
+`tests/test_rpc.py` (transport, bit-identical weight round-trip, oversized and
+malformed payloads), `tests/test_aggregation.py` (FedAvg arithmetic and
+degenerate cohorts), `tests/test_sync.py` (staleness, the round barrier,
+concurrent registration), `tests/test_faults.py` (disconnects, timeouts, NaN
+updates, server restart).
 
-The suite covers four areas, one file each:
+The central aggregation test uses shard sizes 10, 100 and 1000 holding values 1,
+2 and 3, so the weighted average is 3210/1110 = 2.8919 while an unweighted mean
+would be exactly 2.0. The 0.89 gap is far outside float tolerance — the test
+cannot pass if anyone replaces the weighting with a plain mean, which on
+equal-sized shards would otherwise go unnoticed.
 
-| Area | File | What it checks |
-|---|---|---|
-| RPC communication | `tests/test_rpc.py` | server starts and serves; client registers; the full 225k-parameter model round-trips through gRPC bit-identically (SHA-256 fingerprint); oversized payloads raise `RESOURCE_EXHAUSTED` and leave the server serving; malformed payloads are rejected cleanly |
-| Aggregation logic | `tests/test_aggregation.py` | the hand-computed weighted-average test below; single client; zero reporting clients; mismatched tensor counts and shapes; NaN/Inf |
-| Client synchronisation | `tests/test_sync.py` | stale and future `model_version` rejected and *not applied*; barrier holds until the cohort completes or the deadline expires; 12 clients registering simultaneously get 12 distinct shards |
-| Fault scenarios | `tests/test_faults.py` | client disconnects mid-round; client times out; client returns NaN; server restarted with clients connected |
+### Configuration
 
-Supporting files: `tests/test_config.py`, `tests/test_models.py`,
-`tests/test_data.py`, `tests/test_server_rounds.py`, `tests/helpers.py`.
-
-### The aggregation test that matters
-
-FedAvg is weighted by sample count, and the test is built so that a regression to
-an unweighted mean cannot pass. Three clients with shard sizes 10, 100 and 1000
-holding values 1, 2 and 3:
-
-```
-weighted   = (10·1 + 100·2 + 1000·3) / 1110 = 3210/1110 = 2.8919
-unweighted = (1 + 2 + 3) / 3                             = 2.0000
-```
-
-The 0.89 gap is far outside float tolerance. This matters because with
-equal-sized shards the two are *identical* — a broken implementation would pass
-unnoticed on a uniform split. The default Dirichlet partition produces shards of
-1,816–11,815 samples, so the weighting is load-bearing in practice too.
+One frozen, validated object per run (`fl/config.py`); nothing else reads
+environment variables or hard-codes a hyperparameter. Unknown keys are errors, so
+a typo'd `noise_multipler` fails loudly instead of silently producing a run that
+claims privacy it does not have. `privacy.enabled` with `noise_multiplier: 0` is
+rejected outright. ε is not a config field.
 
 ---
 
-## What this project does and does not claim
+## Limitations
 
-**Supported by the code:**
+Stated plainly, because each of these is a real boundary of what was built.
 
-- Real FedAvg, weighted by client sample count, implemented here and tested
-  against a hand-computed example.
-- A real gRPC control plane carrying real model weights, with sample counts and
-  model versions on the wire, and stale updates rejected.
-- Genuine non-IID partitioning with a configurable Dirichlet concentration, and
-  the skew asserted rather than assumed.
-- Server-side evaluation on a test set no client can access.
-- Client-level DP applied through TFF's `DifferentiallyPrivateFactory`, with
-  epsilon computed by a real accountant.
-- Enforced round deadlines, straggler drops, quorum handling, and recovery from
-  client disconnects, timeouts, NaN updates and server restarts.
+- **Clients are simulated containers on one host, not genuinely separate
+  devices.** `docker compose --scale client=5` starts five processes on a single
+  machine communicating over a local Docker network. The gRPC transport, the
+  registration handshake, the round deadlines and the serialisation costs are all
+  real; the *physical* distribution is not. Nothing here has been run across
+  actual remote hosts, unreliable links, or heterogeneous hardware.
 
-**Not claimed:**
+- **Fashion-MNIST is a benchmark dataset.** It is small, clean, balanced,
+  centrally available and already labelled — none of which is true of the private,
+  messy, unbalanced data that motivates federated learning in practice. The
+  non-IID split is *synthetic*: a Dirichlet partition of a public dataset, not
+  naturally occurring per-party heterogeneity. Results here say nothing about how
+  the method performs on real federated data.
 
-- **Usable accuracy under DP at this scale.** Both DP configurations collapse to
-  ~10%. The arithmetic above explains why, and roughly 950 clients per round
-  would be needed to change it. The mechanism is correct; the scale is not.
-- **Secure aggregation.** The server sees every client's plaintext update. DP
-  bounds what the *released model* reveals, not what the server observes.
-- **Byzantine robustness.** NaN and malformed updates are rejected, but a
-  well-formed malicious update within the clipping norm is aggregated normally.
-- **Cross-device scale.** This is a cross-silo design: clients are long-lived,
-  registration is in-memory, and no state survives a server restart.
-- **Windows or macOS support.** TFF publishes Linux-only wheels.
+- **Secure aggregation is not implemented, so the server observes every
+  individual client update.** Updates arrive as plaintext weights and the server
+  reads each one before averaging. Differential privacy bounds what the *released
+  global model* reveals; it does nothing to hide an individual contribution from
+  the server itself. A server that wanted to inspect or invert a single client's
+  update could do so.
+
+- **There is no adversarial or Byzantine client handling.** Malformed payloads,
+  NaN/Inf weights, wrong shapes, stale versions and unregistered senders are all
+  rejected — but those are integrity checks, not a threat model. A well-formed
+  malicious update within the clipping norm is aggregated like any other. There is
+  no update-poisoning detection, no robust aggregation rule (no median, trimmed
+  mean or Krum), no client reputation, and no authentication: any process that can
+  reach the port can register and contribute.
+
+Also true, and smaller: channels are `insecure_channel` with no TLS; server state
+is in memory and does not survive a restart (clients re-register and reclaim their
+shards, but the model version resets to 0); only `fashion_mnist` and `small_cnn`
+are accepted by config validation.
+
+---
+
+## Roadmap — planned, not built
+
+Nothing in this section is implemented. Each item addresses a limitation stated
+above and contradicts no claim made above it.
+
+- **Secure aggregation**, so the server learns only the sum and never an
+  individual update — the gap named in Limitations.
+- **Robust aggregation rules** (coordinate-wise median, trimmed mean, Krum) and
+  update-poisoning detection, to give the system an actual threat model.
+- **Client authentication and TLS**, replacing `insecure_channel` and the
+  currently open registration endpoint.
+- **Larger cohorts**, the only way to make the *already-implemented* client-level
+  DP useful at this model size: the measured `z·√d / m` ratio implies ~950 clients
+  per round. Reaching that needs many more clients or a smaller parameter count.
+  (This is a scale item, not a DP item — DP itself is built; see *Results*.)
+- **Adaptive clipping** (quantile-based, as TFF's adaptive factory supports) in
+  place of the fixed clipping norm currently set from measured update norms.
+- **Genuine multi-host deployment**, replacing single-host containers, to
+  exercise real network latency, partitions and heterogeneous clients.
+- **Persistent server state**, so a restart resumes at the current model version
+  instead of resetting to 0.
+- **More datasets and architectures**, beyond the single `fashion_mnist` /
+  `small_cnn` pair the config currently accepts.
+
+> **Differential privacy is not on this roadmap because it is implemented.**
+> Client-level DP via TFF, with ε computed by TensorFlow Privacy's accountant, is
+> described under *Results* above and measured at ε = 6.228 and ε = 1.639
+> (δ = 1 × 10⁻⁵). Listing it as future work would contradict those results.
