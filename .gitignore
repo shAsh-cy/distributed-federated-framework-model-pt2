@@ -1,7 +1,47 @@
-venv/
+# Python
 __pycache__/
 *.pyc
-.DS_Store
+*.pyo
+*.egg-info/
+.eggs/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Datasets downloaded at runtime (Fashion-MNIST lands here; ~30 MB)
+data/
+*.gz
+*.idx*
+
+# Generated protobuf / gRPC stubs. Regenerated from fl/proto/fl_comm.proto by
+# fl.proto.ensure_generated(); never committed, so the .proto stays the single
+# source of truth and stubs cannot drift from it.
+*_pb2.py
+*_pb2_grpc.py
+*_pb2.pyi
+
+# Model checkpoints
 *.pth
 *.pt
+*.h5
+*.keras
+checkpoints/
+
+# Test / coverage artefacts
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.ruff_cache/
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Archives
 *.zip

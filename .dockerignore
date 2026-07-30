@@ -1,0 +1,23 @@
+.git
+.github
+.gitignore
+.gitattributes
+
+# Never ship the downloaded dataset into the build context
+data/
+*.gz
+
+venv/
+.venv/
+__pycache__/
+*.pyc
+*_pb2.py
+*_pb2_grpc.py
+
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+AUDIT.md
+GIT_SETUP.md
