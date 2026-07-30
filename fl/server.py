@@ -337,6 +337,12 @@ class FederatedServer(fl_comm_pb2_grpc.FederatedLearningServicer):
             self._responded.add(request.client_id)
             self._lock.notify_all()
 
+            # Counted before validation: a rejected update still crossed the
+            # network. Charging only accepted payloads would understate real
+            # bandwidth exactly when things are going wrong, which is when the
+            # figure matters most.
+            self._bytes_received += request.ByteSize()
+
             try:
                 weights = proto_to_weights(request.weights)
             except SerializationError as exc:
@@ -370,7 +376,6 @@ class FederatedServer(fl_comm_pb2_grpc.FederatedLearningServicer):
                     current_model_version=current_version,
                 )
 
-            self._bytes_received += request.ByteSize()
             self._updates[request.client_id] = ClientUpdate(
                 client_id=request.client_id,
                 weights=weights,
@@ -687,6 +692,9 @@ def main(argv: list[str] | None = None) -> int:
         LOGGER.info("final accuracy %.4f after %d rounds", final.accuracy, len(metrics))
 
     if args.metrics_out:
+        # The Docker image has no results/ directory, and losing a completed run
+        # to a missing parent directory would be an expensive way to find out.
+        Path(args.metrics_out).parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "config": config.to_dict(),
             "aggregator": server.aggregator.name,
