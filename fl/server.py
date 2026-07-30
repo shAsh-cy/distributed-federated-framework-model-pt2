@@ -35,14 +35,14 @@ import logging
 import math
 import threading
 import time
+from collections.abc import Callable
 from concurrent import futures
 from dataclasses import dataclass, field
-from typing import Callable
 
 import grpc
 import numpy as np
 
-from .aggregation import Aggregator, AggregationError, ClientUpdate, Weights
+from .aggregation import AggregationError, Aggregator, ClientUpdate, Weights
 from .config import Config
 from .proto import fl_comm_pb2, fl_comm_pb2_grpc
 from .serialization import SerializationError, proto_nbytes, proto_to_weights, weights_to_proto
@@ -125,12 +125,16 @@ class FederatedServer(fl_comm_pb2_grpc.FederatedLearningServicer):
         self._clients: dict[str, _ClientRecord] = {}
         self._next_shard = 0
 
-        self._global_weights: Weights = [np.array(w, dtype=np.float32, copy=True) for w in initial_weights]
+        self._global_weights: Weights = [
+            np.array(w, dtype=np.float32, copy=True) for w in initial_weights
+        ]
         self._model_version = 0
         self._round = 0
         self._cohort: set[str] = set()
         self._deadline_monotonic: float | None = None
         self._updates: dict[str, ClientUpdate] = {}
+        #: Cohort members that answered this round at all, valid payload or not.
+        self._responded: set[str] = set()
         self._finished = False
 
         self._bytes_sent = 0
@@ -180,7 +184,9 @@ class FederatedServer(fl_comm_pb2_grpc.FederatedLearningServicer):
                 # Reconnecting client reclaims its own shard rather than being
                 # handed a second one, which would double-count its data.
                 record = self._clients[requested]
-                LOGGER.info("client %s re-registered (shard %d)", record.client_id, record.shard_index)
+                LOGGER.info(
+                    "client %s re-registered (shard %d)", record.client_id, record.shard_index
+                )
                 return _PB.RegisterResponse(
                     accepted=True,
                     client_id=record.client_id,
@@ -191,9 +197,7 @@ class FederatedServer(fl_comm_pb2_grpc.FederatedLearningServicer):
             if self._next_shard >= self.config.data.num_clients:
                 return _PB.RegisterResponse(
                     accepted=False,
-                    rejection_reason=(
-                        f"all {self.config.data.num_clients} shards already claimed"
-                    ),
+                    rejection_reason=(f"all {self.config.data.num_clients} shards already claimed"),
                 )
 
             client_id = requested or f"client-{self._next_shard}"
@@ -225,15 +229,23 @@ class FederatedServer(fl_comm_pb2_grpc.FederatedLearningServicer):
 
             if self._finished:
                 return _PB.GetGlobalModelResponse(
-                    action=_PB.ROUND_ACTION_STOP, round=self._round, model_version=self._model_version
+                    action=_PB.ROUND_ACTION_STOP,
+                    round=self._round,
+                    model_version=self._model_version,
                 )
 
             # A client that is not sampled waits. So does one that has already
-            # reported this round: without this it would poll, see the round still
+            # answered this round: without this it would poll, see the round still
             # open, and retrain the same round repeatedly -- burning local compute
             # and re-sending the global model on every pass.
-            already_reported = request.client_id in self._updates
-            if self._round == 0 or request.client_id not in self._cohort or already_reported:
+            #
+            # The check is against _responded, not _updates. A client whose update
+            # was rejected has still had its turn; keying on _updates would keep
+            # handing it the 900 KB model on every poll for the rest of the round.
+            # Measured cost of getting this wrong: 1.5 GB of server->client
+            # traffic in a 20-round DP run whose honest total is 90 MB.
+            already_answered = request.client_id in self._responded
+            if self._round == 0 or request.client_id not in self._cohort or already_answered:
                 return _PB.GetGlobalModelResponse(
                     action=_PB.ROUND_ACTION_WAIT,
                     round=self._round,
@@ -317,6 +329,14 @@ class FederatedServer(fl_comm_pb2_grpc.FederatedLearningServicer):
                     current_model_version=current_version,
                 )
 
+            # The client answered for this round. Record that separately from
+            # whether its payload was usable: the barrier waits on *responses*,
+            # so a cohort that all fail validation closes the round immediately
+            # instead of every client going silent and the round burning its
+            # full deadline. Only genuinely unreachable clients cost a timeout.
+            self._responded.add(request.client_id)
+            self._lock.notify_all()
+
             try:
                 weights = proto_to_weights(request.weights)
             except SerializationError as exc:
@@ -388,7 +408,9 @@ class FederatedServer(fl_comm_pb2_grpc.FederatedLearningServicer):
             f"{self.config.server.host}:{self.config.server.port}"
         )
         if self.port == 0:
-            raise RuntimeError(f"failed to bind {self.config.server.host}:{self.config.server.port}")
+            raise RuntimeError(
+                f"failed to bind {self.config.server.host}:{self.config.server.port}"
+            )
         self._grpc_server.start()
         LOGGER.info("server listening on %s:%d", self.config.server.host, self.port)
         return self.port
@@ -401,7 +423,9 @@ class FederatedServer(fl_comm_pb2_grpc.FederatedLearningServicer):
     def wait_for_clients(self, target: int | None = None, timeout: float | None = None) -> int:
         """Block until ``target`` clients register, or the timeout expires."""
         target = target if target is not None else self.config.data.num_clients
-        timeout = timeout if timeout is not None else self.config.server.registration_timeout_seconds
+        timeout = (
+            timeout if timeout is not None else self.config.server.registration_timeout_seconds
+        )
         deadline = time.monotonic() + timeout
         with self._lock:
             while len(self._clients) < target:
@@ -429,7 +453,9 @@ class FederatedServer(fl_comm_pb2_grpc.FederatedLearningServicer):
                 f"only {registered} client(s) registered before the timeout; "
                 f"need at least {self.config.server.min_clients_per_round}"
             )
-        LOGGER.info("starting %d rounds with %d registered clients", self.config.training.rounds, registered)
+        LOGGER.info(
+            "starting %d rounds with %d registered clients", self.config.training.rounds, registered
+        )
 
         for round_index in range(1, self.config.training.rounds + 1):
             self._run_one_round(round_index)
@@ -447,6 +473,7 @@ class FederatedServer(fl_comm_pb2_grpc.FederatedLearningServicer):
             self._round = round_index
             self._cohort = set(cohort)
             self._updates = {}
+            self._responded = set()
             self._deadline_monotonic = started + self.config.server.round_deadline_seconds
             bytes_sent_at_start = self._bytes_sent
             bytes_received_at_start = self._bytes_received
@@ -461,25 +488,36 @@ class FederatedServer(fl_comm_pb2_grpc.FederatedLearningServicer):
             ", ".join(cohort),
         )
 
-        # Barrier: release as soon as the cohort is complete, or at the deadline.
+        # Barrier: release once every sampled client has answered, or at the
+        # deadline. Waiting on responses rather than on accepted updates means a
+        # round in which every client fails validation closes at once; only
+        # genuinely silent clients cost the full timeout.
         with self._lock:
-            while len(self._updates) < len(cohort):
+            while len(self._responded) < len(cohort):
                 remaining = self._deadline_monotonic - time.monotonic()
                 if remaining <= 0:
                     break
                 self._lock.wait(remaining)
 
             reported = dict(self._updates)
+            silent = sorted(set(cohort) - self._responded)
             self._deadline_monotonic = time.monotonic()  # close the barrier
 
         dropped = sorted(set(cohort) - set(reported))
         for client_id in dropped:
-            LOGGER.warning(
-                "round %d: dropping %s -- no update before the %.1fs deadline",
-                round_index,
-                client_id,
-                self.config.server.round_deadline_seconds,
-            )
+            if client_id in silent:
+                LOGGER.warning(
+                    "round %d: dropping %s -- silent, no response before the %.1fs deadline",
+                    round_index,
+                    client_id,
+                    self.config.server.round_deadline_seconds,
+                )
+            else:
+                LOGGER.warning(
+                    "round %d: dropping %s -- responded but its update was rejected",
+                    round_index,
+                    client_id,
+                )
 
         aggregated = False
         if len(reported) < self.config.server.min_clients_per_round:
@@ -501,7 +539,9 @@ class FederatedServer(fl_comm_pb2_grpc.FederatedLearningServicer):
                     self._model_version += 1
                 aggregated = True
             except AggregationError:
-                LOGGER.exception("round %d: aggregation failed; keeping previous model", round_index)
+                LOGGER.exception(
+                    "round %d: aggregation failed; keeping previous model", round_index
+                )
 
         loss, accuracy = self.evaluate_fn(self.global_weights())
         duration = time.monotonic() - started
@@ -571,7 +611,7 @@ def build_evaluator(model_name: str, test_x: np.ndarray, test_y: np.ndarray, bat
 
 def build_server(config: Config) -> FederatedServer:
     """Assemble a server from a config: model, held-out test set, aggregator."""
-    from .aggregation import make_aggregator
+    from .aggregation import compute_epsilon, make_aggregator
     from .data import load_fashion_mnist
     from .models import build_model
 
@@ -579,13 +619,42 @@ def build_server(config: Config) -> FederatedServer:
     LOGGER.info("server holds %d held-out test examples; no client sees them", len(test))
 
     initial_weights = build_model(config.model.name, seed=config.seed).get_weights()
-    aggregator = make_aggregator(clients_per_round=config.clients_per_round)
+    aggregator = make_aggregator(
+        dp_enabled=config.privacy.enabled,
+        noise_multiplier=config.privacy.noise_multiplier,
+        l2_clip_norm=config.privacy.l2_clip_norm,
+        clients_per_round=config.clients_per_round,
+    )
+
+    epsilon_fn = None
+    if config.privacy.enabled:
+
+        def epsilon_fn(completed_rounds: int) -> float:
+            """Cumulative epsilon after ``completed_rounds`` rounds."""
+            return compute_epsilon(
+                noise_multiplier=config.privacy.noise_multiplier,
+                sampling_rate=config.client_sampling_rate,
+                rounds=completed_rounds,
+                delta=config.privacy.delta,
+            )
+
+        LOGGER.info(
+            "client-level DP enabled: noise_multiplier=%.3f, l2_clip_norm=%.3f, q=%.3f, "
+            "delta=%.1e -> epsilon after %d rounds will be %.3f",
+            config.privacy.noise_multiplier,
+            config.privacy.l2_clip_norm,
+            config.client_sampling_rate,
+            config.privacy.delta,
+            config.training.rounds,
+            epsilon_fn(config.training.rounds),
+        )
 
     return FederatedServer(
         config=config,
         initial_weights=initial_weights,
         aggregator=aggregator,
         evaluate_fn=build_evaluator(config.model.name, test.x, test.y),
+        epsilon_fn=epsilon_fn,
     )
 
 

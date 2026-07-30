@@ -57,6 +57,12 @@ class FederatedClient:
         self.model = None
         self.x = None
         self.y = None
+        # (round, model_version) pairs already attempted. A rejected submission
+        # must not be retried against the same global model: the rejection is
+        # deterministic, so retrying re-trains and re-sends forever, holding the
+        # round open until its deadline. Seen in practice as a diverged client
+        # retrying an INVALID_PAYLOAD 12 times and moving 157 MiB in one round.
+        self._attempted: set[tuple[int, int]] = set()
 
     # -- setup --------------------------------------------------------------
 
@@ -80,19 +86,29 @@ class FederatedClient:
         )
         return self.client_id
 
-    def load_data(self) -> None:
-        """Load this client's shard. The test split is loaded and discarded."""
+    def load_data(self, train=None, shards=None) -> None:
+        """Load this client's shard. The test split is loaded and discarded.
+
+        Args:
+            train: Pre-loaded training :class:`~fl.data.Dataset`. Supplied by the
+                in-process experiment runner so ten simultaneous clients share
+                one copy of Fashion-MNIST instead of loading ~190 MB each.
+            shards: Pre-computed partition, for the same reason. Deriving it from
+                the same config and seed yields an identical split either way.
+        """
         if self.shard_index is None:
             raise RuntimeError("register() must be called before load_data()")
 
-        train, _test_held_by_server_only = load_fashion_mnist()
-        shards = partition(
-            train.y,
-            num_clients=self.config.data.num_clients,
-            scheme=self.config.data.partition,
-            alpha=self.config.data.dirichlet_alpha,
-            seed=self.config.seed,
-        )
+        if train is None:
+            train, _test_held_by_server_only = load_fashion_mnist()
+        if shards is None:
+            shards = partition(
+                train.y,
+                num_clients=self.config.data.num_clients,
+                scheme=self.config.data.partition,
+                alpha=self.config.data.dirichlet_alpha,
+                seed=self.config.seed,
+            )
         shard = train.take(shards[self.shard_index])
         self.x, self.y = shard.x, shard.y
         LOGGER.info(
@@ -150,15 +166,26 @@ class FederatedClient:
 
         idle = 0
         while True:
-            response = self.stub.GetGlobalModel(
-                _PB.GetGlobalModelRequest(client_id=self.client_id)
-            )
+            try:
+                response = self.stub.GetGlobalModel(
+                    _PB.GetGlobalModelRequest(client_id=self.client_id)
+                )
+            except ValueError:
+                # close() was called while this loop was running. Exiting quietly
+                # is correct: a shut-down client has nothing to report, and
+                # raising here would surface a spurious error from a daemon
+                # thread during teardown.
+                LOGGER.info("client %s: channel closed, exiting", self.client_id)
+                return
 
             if response.action == _PB.ROUND_ACTION_STOP:
                 LOGGER.info("client %s: server signalled stop", self.client_id)
                 return
 
-            if response.action != _PB.ROUND_ACTION_TRAIN:
+            attempt_key = (response.round, response.model_version)
+            already_tried = attempt_key in self._attempted
+
+            if response.action != _PB.ROUND_ACTION_TRAIN or already_tried:
                 idle += 1
                 if idle > max_idle_polls:
                     LOGGER.warning("client %s: idle limit reached, exiting", self.client_id)
@@ -167,13 +194,25 @@ class FederatedClient:
                 continue
 
             idle = 0
+            self._attempted.add(attempt_key)
             started = time.monotonic()
             weights, n, loss, accuracy = self.train_one_round(response)
             elapsed = time.monotonic() - started
 
-            reply = self.submit(
-                response.round, response.model_version, weights, n, loss, accuracy
-            )
+            # Local divergence (training on a global model already destroyed by
+            # excessive DP noise, say) is reported rather than hidden. Going
+            # silent would look identical to a crashed client and would hold the
+            # round open until its deadline; submitting lets the server reject
+            # the payload and close the barrier immediately.
+            if not all(np.all(np.isfinite(w)) for w in weights):
+                LOGGER.error(
+                    "client %s: local training diverged to NaN/Inf in round %d; "
+                    "submitting so the server can reject it and close the round",
+                    self.client_id,
+                    response.round,
+                )
+
+            reply = self.submit(response.round, response.model_version, weights, n, loss, accuracy)
             status_name = _PB.UpdateStatus.Name(reply.status)
             if reply.status == _PB.UPDATE_STATUS_ACCEPTED:
                 LOGGER.info(
