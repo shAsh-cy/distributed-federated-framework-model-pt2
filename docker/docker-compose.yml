@@ -1,20 +1,43 @@
-version: '3.8'
+# Run:  docker compose -f docker/docker-compose.yml up --build --scale client=5
+#
+# `client` is a single scalable service, not hardcoded client0/client1. Replicas
+# need no per-replica configuration: a client with no desired_client_id is
+# assigned the next free shard by the server at registration, so N replicas
+# claim N distinct shards on their own.
+#
+# configs/docker.yaml declares num_clients: 5, which is what `--scale client=5`
+# is sized against. Scaling past that is refused by the server ("all 5 shards
+# already claimed") rather than silently double-counting a shard.
+
 services:
   server:
     build:
-      context: ./
-      dockerfile: Dockerfile.server
+      context: ..
+      dockerfile: docker/Dockerfile
+    command: >
+      python -m fl.server
+      --config configs/docker.yaml
+      --metrics-out /app/results/docker_run.json
     ports:
       - "8080:8080"
-  client0:
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket;s=socket.create_connection(('127.0.0.1',8080),2);s.close()"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+
+  client:
     build:
-      context: ./
-      dockerfile: Dockerfile.client
-    environment:
-      - CID=0
-  client1:
-    build:
-      context: ./
-      dockerfile: Dockerfile.client
-    environment:
-      - CID=1
+      context: ..
+      dockerfile: docker/Dockerfile
+    command: >
+      python -m fl.client
+      --config configs/docker.yaml
+      --server server:8080
+    depends_on:
+      server:
+        condition: service_healthy
+    deploy:
+      replicas: 5
+    restart: on-failure

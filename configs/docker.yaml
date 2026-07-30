@@ -1,0 +1,38 @@
+# Configuration for the docker-compose demo.
+#
+# num_clients must match the replica count used with `--scale client=N`.
+# The compose file ships 5 replicas, so this file declares 5 clients.
+seed: 42
+
+data:
+  dataset: fashion_mnist
+  num_clients: 5
+  partition: dirichlet
+  dirichlet_alpha: 0.5
+
+model:
+  name: small_cnn
+
+training:
+  rounds: 5
+  client_fraction: 0.6
+  local_epochs: 1
+  batch_size: 64
+  learning_rate: 0.01
+  momentum: 0.9
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+  # Generous: container startup plus a cold TensorFlow import dominates the
+  # first round far more than training does.
+  round_deadline_seconds: 300.0
+  min_clients_per_round: 2
+  registration_timeout_seconds: 600.0
+  max_message_mb: 128
+
+privacy:
+  enabled: false
+  l2_clip_norm: 1.0
+  noise_multiplier: 0.0
+  delta: 1.0e-5
