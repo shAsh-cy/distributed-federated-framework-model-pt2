@@ -1,0 +1,156 @@
+// Federated learning control plane.
+//
+// VERSIONING
+// ----------
+// Two independent version numbers travel on this wire, and conflating them is a
+// common source of silent corruption:
+//
+//   * `protocol_version` -- the schema version of THIS FILE. Checked once, at
+//     registration. A client built against a different schema is refused outright
+//     rather than allowed to misinterpret field numbers.
+//
+//   * `model_version` -- which global model a set of weights was trained from.
+//     The server increments it every time it publishes a new global model. An
+//     update computed against model N is only valid input to the aggregation
+//     that produces model N+1; submitting it later would fold a stale gradient
+//     into an unrelated model. The server rejects those (REJECTED_STALE_MODEL).
+//
+// The package is versioned too (`fl.v1`), so an incompatible future revision can
+// be introduced as `fl.v2` and served side by side.
+
+syntax = "proto3";
+
+package fl.v1;
+
+// Bumped whenever this schema changes incompatibly.
+enum ProtocolVersion {
+  PROTOCOL_VERSION_UNSPECIFIED = 0;
+  PROTOCOL_VERSION_V1 = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Weight payloads
+// ---------------------------------------------------------------------------
+
+// One tensor of a model's weight list. Weights are sent as raw little-endian
+// float32 buffers plus an explicit shape, rather than as `repeated float`, so
+// that a 225k-parameter model costs ~0.86 MiB instead of paying varint overhead
+// per element.
+message Tensor {
+  string name = 1;
+  repeated int32 shape = 2;
+  // Raw float32 buffer, C-contiguous. Length must equal 4 * prod(shape).
+  bytes data = 3;
+}
+
+// An ordered model weight list. Order matches keras Model.get_weights().
+message ModelWeights {
+  repeated Tensor tensors = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Registration
+// ---------------------------------------------------------------------------
+
+message RegisterRequest {
+  ProtocolVersion protocol_version = 1;
+  // Optional stable identity so a restarted client can reclaim its own shard
+  // instead of being handed a fresh one.
+  string desired_client_id = 2;
+}
+
+message RegisterResponse {
+  bool accepted = 1;
+  string client_id = 2;
+  // Index of the data shard this client owns, in [0, num_clients).
+  int32 shard_index = 3;
+  int32 num_clients = 4;
+  // Populated when accepted is false.
+  string rejection_reason = 5;
+}
+
+// ---------------------------------------------------------------------------
+// Round participation
+// ---------------------------------------------------------------------------
+
+enum RoundAction {
+  ROUND_ACTION_UNSPECIFIED = 0;
+  // Client is selected this round: train and submit before the deadline.
+  ROUND_ACTION_TRAIN = 1;
+  // Client is not in this round's sample: sleep and poll again.
+  ROUND_ACTION_WAIT = 2;
+  // All rounds finished; client may exit.
+  ROUND_ACTION_STOP = 3;
+}
+
+message GetGlobalModelRequest {
+  string client_id = 1;
+}
+
+message GetGlobalModelResponse {
+  RoundAction action = 1;
+  int32 round = 2;
+  // The model version these weights represent. Must be echoed back in
+  // SubmitUpdateRequest.model_version.
+  int64 model_version = 3;
+  ModelWeights weights = 4;
+  // Wall-clock seconds remaining before this round's barrier closes.
+  double seconds_until_deadline = 5;
+  // Server-dictated local training hyperparameters, so a client never has to be
+  // configured consistently with the server by hand.
+  int32 local_epochs = 6;
+  int32 batch_size = 7;
+  double learning_rate = 8;
+  double momentum = 9;
+}
+
+// ---------------------------------------------------------------------------
+// Update submission
+// ---------------------------------------------------------------------------
+
+enum UpdateStatus {
+  UPDATE_STATUS_UNSPECIFIED = 0;
+  UPDATE_STATUS_ACCEPTED = 1;
+  // model_version predates the round currently being aggregated.
+  UPDATE_STATUS_REJECTED_STALE_MODEL = 2;
+  // Arrived after the round deadline; the round already closed without it.
+  UPDATE_STATUS_REJECTED_DEADLINE_PASSED = 3;
+  // client_id was never registered, or was evicted.
+  UPDATE_STATUS_REJECTED_UNKNOWN_CLIENT = 4;
+  // Client was not sampled for this round.
+  UPDATE_STATUS_REJECTED_NOT_SELECTED = 5;
+  // Payload failed validation: shape mismatch, non-finite values, bad length.
+  UPDATE_STATUS_REJECTED_INVALID_PAYLOAD = 6;
+}
+
+message SubmitUpdateRequest {
+  string client_id = 1;
+  int32 round = 2;
+  // Global model version this update was trained from. Aggregation weights it
+  // only if it matches the round currently open.
+  int64 model_version = 3;
+  ModelWeights weights = 4;
+  // Number of local training examples. This is the FedAvg weighting term n_k;
+  // the server does not infer it, because only the client knows its shard size.
+  int64 num_examples = 5;
+  // Optional local training telemetry, logged but never used for aggregation.
+  double train_loss = 6;
+  double train_accuracy = 7;
+}
+
+message SubmitUpdateResponse {
+  UpdateStatus status = 1;
+  string detail = 2;
+  // Version the server currently holds, so a stale client can resynchronise.
+  int64 current_model_version = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Service
+// ---------------------------------------------------------------------------
+
+service FederatedLearning {
+  rpc Register(RegisterRequest) returns (RegisterResponse);
+  rpc GetGlobalModel(GetGlobalModelRequest) returns (GetGlobalModelResponse);
+  rpc SubmitUpdate(SubmitUpdateRequest) returns (SubmitUpdateResponse);
+}
