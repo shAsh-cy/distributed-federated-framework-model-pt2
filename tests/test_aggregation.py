@@ -1,4 +1,4 @@
-"""Tests for FedAvg aggregation arithmetic."""
+"""Tests for FedAvg arithmetic and differentially private aggregation."""
 
 from __future__ import annotations
 
@@ -8,7 +8,12 @@ import pytest
 from fl.aggregation import (
     AggregationError,
     ClientUpdate,
+    DPFedAvgAggregator,
     FedAvgAggregator,
+    compute_epsilon,
+    l2_norm,
+    make_aggregator,
+    subtract,
     uniform_average,
     validate_updates,
     weighted_average,
@@ -149,6 +154,160 @@ def test_float64_accumulation_survives_extreme_weight_disparity():
     assert result[0][0, 0] > 0.0
 
 
+# ---------------------------------------------------------------------------
+# Differential privacy
+# ---------------------------------------------------------------------------
+
+
+def test_dp_aggregator_requires_positive_noise():
+    with pytest.raises(ValueError, match="noise_multiplier must be > 0"):
+        DPFedAvgAggregator(noise_multiplier=0.0, l2_clip_norm=1.0, clients_per_round=3)
+
+
+def test_dp_aggregator_rejects_bad_clip_and_cohort():
+    with pytest.raises(ValueError, match="l2_clip_norm must be > 0"):
+        DPFedAvgAggregator(noise_multiplier=1.0, l2_clip_norm=0.0, clients_per_round=3)
+    with pytest.raises(ValueError, match="clients_per_round must be >= 1"):
+        DPFedAvgAggregator(noise_multiplier=1.0, l2_clip_norm=1.0, clients_per_round=0)
+
+
+@pytest.mark.slow
+def test_dp_aggregator_ignores_sample_counts():
+    """Client-level DP must weight every client equally.
+
+    Sample-count weighting would make one client's influence depend on its own
+    (private) shard size, so the sensitivity bound -- and therefore the reported
+    epsilon -- would not hold. With negligible noise and a huge clipping norm the
+    DP path must reproduce the *uniform* mean, not the weighted one.
+    """
+    global_w = [np.zeros((2, 2), np.float32)]
+    updates = [_update("a", 1.0, 10), _update("b", 2.0, 100), _update("c", 3.0, 1000)]
+
+    agg = DPFedAvgAggregator(noise_multiplier=1e-9, l2_clip_norm=1e6, clients_per_round=3)
+    result = agg.aggregate(updates, global_w)
+
+    np.testing.assert_allclose(result[0], np.full((2, 2), 2.0), atol=1e-3)
+    weighted = 3210.0 / 1110.0
+    assert not np.allclose(result[0], np.full((2, 2), weighted), atol=0.1)
+
+
+@pytest.mark.slow
+def test_dp_clipping_bounds_each_client_contribution():
+    """A client with an enormous update must not move the model more than the clip allows."""
+    global_w = [np.zeros((10,), np.float32)]
+    honest = ClientUpdate("honest", [np.full((10,), 0.01, np.float32)], 100)
+    huge = ClientUpdate("huge", [np.full((10,), 1000.0, np.float32)], 100)
+
+    agg = DPFedAvgAggregator(noise_multiplier=1e-9, l2_clip_norm=1.0, clients_per_round=2)
+    result = agg.aggregate([honest, huge], global_w)
+
+    # Each delta is clipped to L2 <= 1, so the mean delta has L2 <= 1.
+    assert l2_norm(subtract(result, global_w)) <= 1.0 + 1e-3
+
+
+@pytest.mark.slow
+def test_dp_noise_actually_perturbs_the_result():
+    """With real noise the output must differ from the noiseless mean."""
+    global_w = [np.zeros((50,), np.float32)]
+    updates = [ClientUpdate(f"c{i}", [np.full((50,), 0.1, np.float32)], 100) for i in range(4)]
+    agg = DPFedAvgAggregator(noise_multiplier=1.0, l2_clip_norm=1.0, clients_per_round=4)
+    noisy = agg.aggregate(updates, global_w)
+    assert not np.allclose(noisy[0], np.full((50,), 0.1), atol=1e-4)
+
+
+@pytest.mark.slow
+def test_dp_aggregator_carries_state_across_rounds():
+    global_w = [np.zeros((4,), np.float32)]
+    updates = [ClientUpdate(f"c{i}", [np.full((4,), 0.5, np.float32)], 10) for i in range(3)]
+    agg = DPFedAvgAggregator(noise_multiplier=0.5, l2_clip_norm=1.0, clients_per_round=3)
+    first = agg.aggregate(updates, global_w)
+    second = agg.aggregate(updates, global_w)
+    assert agg._state is not None
+    # Fresh noise every round, so two identical inputs give different outputs.
+    assert not np.allclose(first[0], second[0], atol=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# Privacy accounting
+# ---------------------------------------------------------------------------
+
+
+def test_zero_noise_gives_infinite_epsilon():
+    """No noise is no privacy; a large finite number here would be a lie."""
+    assert compute_epsilon(0.0, 0.5, 20) == float("inf")
+
+
+def test_zero_rounds_gives_zero_epsilon():
+    assert compute_epsilon(1.0, 0.5, 0) == 0.0
+
+
+def test_epsilon_matches_known_accountant_value():
+    """Regression pin against dp_accounting's RDP accountant."""
+    eps = compute_epsilon(noise_multiplier=1.0, sampling_rate=0.5, rounds=20, delta=1e-5)
+    assert eps == pytest.approx(16.55, abs=0.05)
+
+
+def test_epsilon_grows_with_rounds():
+    """Every round composes more privacy loss."""
+    values = [compute_epsilon(1.0, 0.5, r) for r in (1, 5, 20, 50)]
+    assert values == sorted(values)
+    assert values[0] < values[-1]
+
+
+def test_epsilon_shrinks_as_noise_grows():
+    """More noise must buy a tighter guarantee."""
+    values = [compute_epsilon(z, 0.5, 20) for z in (0.5, 1.0, 2.0, 4.0)]
+    assert values == sorted(values, reverse=True)
+
+
+def test_epsilon_shrinks_as_sampling_rate_falls():
+    """Privacy amplification by subsampling."""
+    values = [compute_epsilon(1.0, q, 20) for q in (1.0, 0.5, 0.1)]
+    assert values == sorted(values, reverse=True)
+
+
+def test_epsilon_is_larger_at_smaller_delta():
+    assert compute_epsilon(1.0, 0.5, 20, delta=1e-6) > compute_epsilon(1.0, 0.5, 20, delta=1e-4)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"rounds": -1}, "rounds must be >= 0"),
+        ({"delta": 0.0}, "delta must be in"),
+        ({"delta": 1.0}, "delta must be in"),
+        ({"sampling_rate": 0.0}, "sampling_rate must be in"),
+        ({"sampling_rate": 1.5}, "sampling_rate must be in"),
+    ],
+)
+def test_epsilon_argument_validation(kwargs, message):
+    base = {"noise_multiplier": 1.0, "sampling_rate": 0.5, "rounds": 10, "delta": 1e-5}
+    base.update(kwargs)
+    with pytest.raises(ValueError, match=message):
+        compute_epsilon(**base)
+
+
+# ---------------------------------------------------------------------------
+# Factory
+# ---------------------------------------------------------------------------
+
+
+def test_make_aggregator_returns_plain_fedavg_when_dp_disabled():
+    agg = make_aggregator(
+        dp_enabled=False, noise_multiplier=0.0, l2_clip_norm=1.0, clients_per_round=5
+    )
+    assert isinstance(agg, FedAvgAggregator)
+    assert agg.name == "fedavg"
+
+
+def test_make_aggregator_returns_dp_when_enabled():
+    agg = make_aggregator(
+        dp_enabled=True, noise_multiplier=1.0, l2_clip_norm=1.0, clients_per_round=5
+    )
+    assert isinstance(agg, DPFedAvgAggregator)
+    assert agg.name == "dp-fedavg"
+
+
 def test_fedavg_aggregator_matches_weighted_average():
     updates = [_update("a", 1.0, 10), _update("b", 2.0, 100), _update("c", 3.0, 1000)]
     agg = FedAvgAggregator()
@@ -157,4 +316,3 @@ def test_fedavg_aggregator_matches_weighted_average():
         weighted_average(updates)[0],
         rtol=0,
     )
-    assert agg.name == "fedavg"

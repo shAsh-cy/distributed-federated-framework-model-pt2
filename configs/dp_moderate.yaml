@@ -1,0 +1,43 @@
+# Moderate client-level differential privacy.
+#
+# Identical to default.yaml except for the privacy block, so the accuracy
+# difference against the no-DP baseline is attributable to DP alone.
+#
+# Resulting guarantee (computed, not chosen): epsilon ~= 6.23 at delta = 1e-5
+# after 20 rounds with q = 0.5. See fl.aggregation.compute_epsilon.
+seed: 42
+
+data:
+  dataset: fashion_mnist
+  num_clients: 10
+  partition: dirichlet
+  dirichlet_alpha: 0.5
+
+model:
+  name: small_cnn
+
+training:
+  rounds: 20
+  client_fraction: 0.5
+  local_epochs: 1
+  batch_size: 32
+  learning_rate: 0.01
+  momentum: 0.9
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+  round_deadline_seconds: 300.0
+  min_clients_per_round: 2
+  registration_timeout_seconds: 600.0
+  max_message_mb: 128
+
+privacy:
+  enabled: true
+  # Measured: client update norms after one local epoch are 1.96-4.65 with a
+  # median of 2.96. Clipping at 3.0 puts the threshold at roughly the median, so
+  # about half of all updates are clipped -- tight enough to bound sensitivity
+  # without discarding most of the signal.
+  l2_clip_norm: 3.0
+  noise_multiplier: 2.0
+  delta: 1.0e-5

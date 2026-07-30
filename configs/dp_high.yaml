@@ -1,0 +1,41 @@
+# High-noise client-level differential privacy.
+#
+# Identical to dp_moderate.yaml except for noise_multiplier, so the accuracy
+# difference between the two is attributable to noise alone.
+#
+# Resulting guarantee (computed, not chosen): epsilon ~= 1.64 at delta = 1e-5
+# after 20 rounds with q = 0.5 -- roughly 3.8x tighter than the moderate
+# setting. Expect the accuracy to be correspondingly worse; that is the
+# privacy/utility trade-off doing what it is supposed to do.
+seed: 42
+
+data:
+  dataset: fashion_mnist
+  num_clients: 10
+  partition: dirichlet
+  dirichlet_alpha: 0.5
+
+model:
+  name: small_cnn
+
+training:
+  rounds: 20
+  client_fraction: 0.5
+  local_epochs: 1
+  batch_size: 32
+  learning_rate: 0.01
+  momentum: 0.9
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+  round_deadline_seconds: 300.0
+  min_clients_per_round: 2
+  registration_timeout_seconds: 600.0
+  max_message_mb: 128
+
+privacy:
+  enabled: true
+  l2_clip_norm: 3.0
+  noise_multiplier: 6.0
+  delta: 1.0e-5
