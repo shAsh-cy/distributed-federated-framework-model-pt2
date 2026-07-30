@@ -671,6 +671,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Federated learning server.")
     parser.add_argument("--config", default="configs/default.yaml", help="Path to a YAML config.")
     parser.add_argument("--metrics-out", default=None, help="Write per-round metrics JSON here.")
+    parser.add_argument(
+        "--linger-seconds",
+        type=float,
+        default=5.0,
+        help="Keep serving this long after the last round so clients can see STOP.",
+    )
     parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args(argv)
 
@@ -684,6 +690,11 @@ def main(argv: list[str] | None = None) -> int:
     server.start()
     try:
         metrics = server.run_rounds()
+        # Keep serving briefly after the last round so connected clients get one
+        # more poll and see ROUND_ACTION_STOP. Without this the socket closes
+        # first, clients see UNAVAILABLE instead of a clean stop, and under
+        # Docker's `restart: on-failure` they crash-loop after a successful run.
+        time.sleep(args.linger_seconds)
     finally:
         server.stop()
 

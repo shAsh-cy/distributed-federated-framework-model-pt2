@@ -157,19 +157,26 @@ class FederatedClient:
 
     # -- main loop ----------------------------------------------------------
 
-    def run(self, poll_interval: float = 0.5, max_idle_polls: int = 100_000) -> None:
-        """Poll the server until it says to stop."""
+    def run(
+        self,
+        poll_interval: float = 0.5,
+        max_idle_polls: int = 100_000,
+        max_unreachable_polls: int = 20,
+    ) -> None:
+        """Poll the server until it says to stop, or until it goes away."""
         if self.client_id is None:
             self.register()
         if self.x is None:
             self.load_data()
 
         idle = 0
+        unreachable = 0
         while True:
             try:
                 response = self.stub.GetGlobalModel(
                     _PB.GetGlobalModelRequest(client_id=self.client_id)
                 )
+                unreachable = 0
             except ValueError:
                 # close() was called while this loop was running. Exiting quietly
                 # is correct: a shut-down client has nothing to report, and
@@ -177,6 +184,25 @@ class FederatedClient:
                 # thread during teardown.
                 LOGGER.info("client %s: channel closed, exiting", self.client_id)
                 return
+            except grpc.RpcError as exc:
+                # The server going away is the normal end of a run, not a crash:
+                # it stops serving once the last round is aggregated, and a
+                # client polling a moment later sees UNAVAILABLE rather than
+                # STOP. Treating that as a failure makes every client exit
+                # non-zero, and under `restart: on-failure` they then crash-loop
+                # forever after a perfectly successful run. Retry briefly to ride
+                # out a genuine blip, then exit cleanly.
+                unreachable += 1
+                if unreachable > max_unreachable_polls:
+                    LOGGER.info(
+                        "client %s: server unreachable after %d attempts (%s); exiting",
+                        self.client_id,
+                        unreachable,
+                        exc.code(),
+                    )
+                    return
+                time.sleep(poll_interval)
+                continue
 
             if response.action == _PB.ROUND_ACTION_STOP:
                 LOGGER.info("client %s: server signalled stop", self.client_id)
