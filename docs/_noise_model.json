@@ -1,0 +1,43 @@
+{
+  "noise_model": [
+    {
+      "noise_multiplier": 2.0,
+      "clip": 3.0,
+      "clients_per_round": 5,
+      "dimension": 225034,
+      "predicted_sigma_sum_per_coord": 6.0,
+      "predicted_sigma_mean_per_coord": 1.2,
+      "measured_sigma_mean_per_coord": 1.2008962631225586,
+      "predicted_noise_vector_norm": 569.2529841819013,
+      "measured_noise_vector_norm": 569.6800333658854,
+      "max_signal_norm": 3.0,
+      "signal_to_noise": 0.005270064599330003
+    },
+    {
+      "noise_multiplier": 6.0,
+      "clip": 3.0,
+      "clients_per_round": 5,
+      "dimension": 225034,
+      "predicted_sigma_sum_per_coord": 18.0,
+      "predicted_sigma_mean_per_coord": 3.6,
+      "measured_sigma_mean_per_coord": 3.599001328150431,
+      "predicted_noise_vector_norm": 1707.7589525457038,
+      "measured_noise_vector_norm": 1707.2879231770833,
+      "max_signal_norm": 3.0,
+      "signal_to_noise": 0.0017566881997766676
+    },
+    {
+      "noise_multiplier": 2.0,
+      "clip": 3.0,
+      "clients_per_round": 200,
+      "dimension": 225034,
+      "predicted_sigma_sum_per_coord": 6.0,
+      "predicted_sigma_mean_per_coord": 0.03,
+      "measured_sigma_mean_per_coord": 0.02996169775724411,
+      "predicted_noise_vector_norm": 14.231324604547533,
+      "measured_noise_vector_norm": 14.213179588317871,
+      "max_signal_norm": 3.0,
+      "signal_to_noise": 0.2108025839732001
+    }
+  ]
+}

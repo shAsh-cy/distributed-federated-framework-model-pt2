@@ -163,11 +163,24 @@ at z = 2 and **569×** at z = 6. Measured directly against a unit-signal input:
 569.9 observed versus 569.3 predicted. The update is essentially all noise, the
 model diverges within two rounds, and accuracy falls to the 10 % of guessing.
 
-Usable client-level DP on this model needs **m ≳ z·√d**, roughly 950 clients per
-round rather than 5 — which is why production deployments use cohorts of
-thousands. At 10 clients there is no noise multiplier that yields both a
-meaningful ε and a working model: pushing the ratio near 1 requires z ≈ 0.01, at
-which ε is astronomically large and the guarantee is vacuous.
+At `m = 5` no noise multiplier yields both a meaningful ε and a working model. A
+sweep over `z` confirms it: `z = 0.1` still trains (70.1 %) but carries ε = 1060,
+while the lowest ε in the sweep — 16.6 at `z = 1.0` — has already destroyed the
+model.
+
+**Cohort size is the fix, and it is measured rather than argued.** Holding ε fixed
+at 6.228 and growing only the number of clients averaged per round:
+
+| Clients per round | 5 | 20 | 50 | 100 | 200 |
+|---|---|---|---|---|---|
+| Best accuracy | 13.2 % | 16.5 % | 38.7 % | 50.7 % | **55.8 %** |
+
+Same privacy guarantee at every column — a 4.2× accuracy gain from averaging more
+clients. Useful learning begins around 100 clients per round; 200 still reaches
+only ~56 % against the 86.9 % non-private baseline.
+
+Full diagnosis, including the ablation that exonerates clipping and the
+predicted-class collapse, is in **[docs/dp_diagnosis.md](docs/dp_diagnosis.md)**.
 
 ---
 
@@ -308,10 +321,12 @@ above and contradicts no claim made above it.
   update-poisoning detection, to give the system an actual threat model.
 - **Client authentication and TLS**, replacing `insecure_channel` and the
   currently open registration endpoint.
-- **Larger cohorts**, the only way to make the *already-implemented* client-level
-  DP useful at this model size: the measured `z·√d / m` ratio implies ~950 clients
-  per round. Reaching that needs many more clients or a smaller parameter count.
-  (This is a scale item, not a DP item — DP itself is built; see *Results*.)
+- **Larger cohorts**, the only change measured to make the *already-implemented*
+  client-level DP useful at this model size. At fixed ε = 6.228, best accuracy
+  rises from 13.2 % at 5 clients per round to 55.8 % at 200; useful learning
+  begins around 100. Closing the remaining gap to 86.9 % needs a larger simulated
+  population, a smaller model, or both. (A scale item, not a DP item — DP itself
+  is built; see *Results* and [docs/dp_diagnosis.md](docs/dp_diagnosis.md).)
 - **Adaptive clipping** (quantile-based, as TFF's adaptive factory supports) in
   place of the fixed clipping norm currently set from measured update norms.
 - **Genuine multi-host deployment**, replacing single-host containers, to
