@@ -1,0 +1,40 @@
+# FEMNIST with its natural by-writer partition.
+#
+# Requires the one-time cache preparation (downloads ~170 MB into gitignored
+# data/):  python scripts/prepare_femnist.py
+#
+# num_clients is the writer subsample: 1000 selects a seeded 1000-writer
+# population from the 3,400 available (set 3400 for all of them). Each client
+# IS one real writer -- the partition is not synthesised, so partition must be
+# "natural" and dirichlet_alpha is unused.
+seed: 42
+
+data:
+  dataset: femnist
+  num_clients: 1000
+  partition: natural
+
+model:
+  name: femnist_cnn
+
+training:
+  rounds: 20
+  client_fraction: 0.05          # 50 of 1000 writers per round
+  local_epochs: 1
+  batch_size: 32
+  learning_rate: 0.01
+  momentum: 0.9
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+  round_deadline_seconds: 600.0
+  min_clients_per_round: 2
+  registration_timeout_seconds: 600.0
+  max_message_mb: 128
+
+privacy:
+  enabled: false
+  l2_clip_norm: 0.5
+  noise_multiplier: 0.0
+  delta: 1.0e-5

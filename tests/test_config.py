@@ -228,3 +228,11 @@ def test_model_dataset_mismatch_rejected_both_ways():
         )
     with pytest.raises(ConfigError, match="does not match data.dataset"):
         Config.from_dict({"model": {"name": "femnist_cnn"}})
+
+
+def test_femnist_yaml_config_loads():
+    cfg = Config.from_yaml(CONFIG_DIR / "femnist.yaml")
+    assert cfg.data.dataset == "femnist"
+    assert cfg.data.partition == "natural"
+    assert cfg.model.name == "femnist_cnn"
+    assert cfg.clients_per_round == 50
