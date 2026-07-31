@@ -33,6 +33,12 @@ directly.
 | Clipping norm *too high*, buying noise for nothing | **Confirmed** | §7 — `S` 3.0 → 0.5 at `m` = 50 moves final accuracy 10.00 % → 73.48 % at identical ε |
 | The cohort-size result is confounded by shrinking shards | **Confirmed** | §8 — the no-DP ceiling itself falls 86.93 % → 57.42 % across the same grid |
 | Once clipping binds, the clip acts as a server step size | **Confirmed** | §9 — a 0.4545× step at `S` = 1.1 recovers the full 27-point gap to `S` = 0.5 |
+| DP non-determinism is caused by the diagnostic instrumentation | **Ruled out** | §10 — two passes with no measurement anywhere still differ; the noise is drawn inside TFF's executor, which never sees `tf.random.set_seed` |
+
+**Read every DP accuracy figure here as a single draw.** Run-to-run spread is
+4.7–29.5 accuracy points depending on cohort size (§10.3), and cannot be removed
+from the harness. Only effects larger than that spread are treated as findings; §10.3
+tabulates which of this document's claims survive and which do not.
 
 ---
 
@@ -358,6 +364,13 @@ shards shrink. At `m = 200` the median update is 0.289, so even `S = 0.5` is
 slack (9% clipped) and SNR is still climbing when the sweep runs out of values —
 **the sweep does not bracket the optimum at large `m`**.
 
+> **Accuracy in this grid is a single run per cell, and the run-to-run spread is
+> 4.7–29.5 accuracy points (§10).** The `S = 3.0` → `S = 0.5` improvement at
+> `m = 50` is roughly 2× the spread and survives; the `S = 1.1` vs `S = 0.5`
+> ordering at `m ≥ 50` does **not**, and should be read as "no distinguishable
+> difference" rather than as a ranking. SNR and noise columns are unaffected —
+> those are measurements of the noise distribution, not of a training outcome.
+
 ### 7.3 Fitted exponent for the signal decay
 
 Round-1 median pre-clip norms are identical across all three clips — 3.994,
@@ -441,6 +454,16 @@ costs **3–5% of achievable accuracy** — and at `m = 200` it costs nothing
 measurable (ratio 1.001; the noise is fully averaged away and the 57.4% figure is
 entirely the thin-shard penalty).
 
+> **Precision warning.** Denominators here are exactly reproducible; numerators are
+> single DP runs, and DP runs have a measured spread of 4.7–29.5 accuracy points at
+> `S = 3.0` (§10). Spread was **not** measured at `S = 0.5`, and there is reason to
+> expect it is smaller — these cells train smoothly rather than sitting at the edge
+> of trainability — but that is an expectation, not a measurement. Read these ratios
+> as "≈ 0.95 at `m = 50`–100, ≈ 1.0 at `m = 200`", not to three significant figures.
+> The qualitative claim (DP's cost is single-digit percent once the cohort and clip
+> are right, versus the 88% implied by the shipped configuration) is far larger than
+> any plausible spread and is not at risk.
+
 The headline collapse was never the price of privacy. It was the price of running
 DP at `m = 5` with a clipping norm 3× above the median update.
 
@@ -487,6 +510,133 @@ round 20.
 
 `server_lr` exists only in `scripts/diagnose_dp.py` and defaults to 1.0; `fl/` is
 unchanged and the production server still applies the aggregate delta as-is.
+
+---
+
+## 10. Reproducibility — and a correction to what this document blamed
+
+An earlier version of this document attributed the fact that §7's `S = 3.0` column
+does not match §6 to the noise instrumentation: `clip_sweep` calls
+`measure_applied_noise` before each cell, which consumes host RNG state.
+**That attribution was wrong.** It was a plausible guess presented as an
+explanation, and testing it took one experiment that had not been run.
+
+### 10.1 The test
+
+`--experiment repeatability` runs each `S = 3.0` configuration **twice in the same
+process, with nothing in between** — no `measure_applied_noise` call anywhere in
+the experiment. If instrumentation were the cause, the two passes would agree.
+
+| `m` | Pass A | Pass B | Round-1 ‖applied‖ A | Round-1 ‖applied‖ B | Identical? |
+|---|---|---|---|---|---|
+| 5 | 0.0000 | 0.1000 | 569.108277 | 569.882132 | **No** |
+| 20 | 0.0960 | 0.1002 | 142.181407 | 142.765687 | **No** |
+| 50 | 0.1479 | 0.3952 | 56.907197 | 56.884553 | **No** |
+| 100 | 0.4973 | 0.5377 | 28.450752 | 28.528936 | **No** |
+| 200 | 0.5886 | 0.4976 | 14.201963 | 14.230995 | **No** |
+
+DP runs do not reproduce even without any measurement. The instrumentation is
+exonerated; the non-determinism is in the stack.
+
+### 10.2 The actual cause
+
+TF Privacy 0.9.0 (`privacy/dp_query/gaussian_query.py`, `get_noised_result`) draws
+the Gaussian noise via
+
+```python
+random_normal = tf.random_normal_initializer(stddev=global_state.stddev)
+```
+
+with **no `seed` argument**. That initialiser is in fact honoured by
+`tf.random.set_seed` in ordinary eager code and under `tf.function` — both checked
+directly, both reproducible — so the initialiser alone is not the problem. The
+problem is that TFF serialises the aggregation to a computation proto and executes
+it **in its own executor, which never sees this process's global seed**. Verified:
+constructing the TFF DP aggregator twice with `tf.random.set_seed(42)` before each
+gives different noise, while the same initialiser under a plain `tf.function` gives
+identical noise.
+
+Neither `tff.aggregators.DifferentiallyPrivateFactory.gaussian_fixed` (signature:
+`noise_multiplier, clients_per_round, clip`) nor `GaussianSumQuery` exposes a seed
+parameter. **There is no supported way to make this deterministic from the
+harness.** Doing it anyway would mean passing a per-round seed into the query —
+changing the DP mechanism this document exists to measure, and risking a silent
+break of the across-round independence the privacy analysis assumes. Not done.
+
+The measurement path was still isolated from the host RNG stream (the zero
+template is now built once and cached) — correct hygiene, but it fixes nothing,
+and it is labelled as such in the code.
+
+### 10.3 Measured spread, and which conclusions survive it
+
+Four independent runs of the identical `S = 3.0` configuration now exist: §6, §7,
+and passes A and B. Final accuracy:
+
+| `m` | §6 | §7 | A | B | **Range** |
+|---|---|---|---|---|---|
+| 5 | 0.1319 | 0.0000 | 0.0000 | 0.1000 | 13.2 pp |
+| 20 | 0.0536 | 0.1000 | 0.0960 | 0.1002 | 4.7 pp |
+| 50 | 0.1085 | 0.1000 | 0.1479 | 0.3952 | **29.5 pp** |
+| 100 | 0.3737 | 0.3962 | 0.4973 | 0.5377 | 16.4 pp |
+| 200 | 0.4120 | 0.4651 | 0.5886 | 0.4976 | 17.7 pp |
+
+Median range **16.4 pp**, maximum **29.5 pp**. This is large, and it means several
+comparisons made earlier in this document are not supported by single runs.
+Testing each reported effect against the spread at its own cohort size:
+
+| Comparison | Effect | Spread | Verdict |
+|---|---|---|---|
+| clip 3.0 → 0.5 @ `m` = 50 | 63.5 pp | 29.5 pp | **Survives** |
+| clip 1.1 → 0.5 @ `m` = 20 | 39.8 pp | 4.7 pp | **Survives** |
+| Step-size 0.4545× @ `m` = 20 (§9) | 32.1 pp | 4.7 pp | **Survives** |
+| clip 3.0 → 1.1 @ `m` = 50 | 55.3 pp | 29.5 pp | Marginal |
+| clip 3.0 → 0.5 @ `m` = 100 | 28.5 pp | 16.4 pp | Marginal |
+| clip 3.0 → 0.5 @ `m` = 200 | 10.9 pp | 17.7 pp | **Within noise** |
+| clip 1.1 → 0.5 @ `m` = 50 | 8.2 pp | 29.5 pp | **Within noise** |
+| clip 1.1 → 0.5 @ `m` = 100 | 3.8 pp | 16.4 pp | **Within noise** |
+| clip 1.1 → 0.5 @ `m` = 200 | 0.5 pp | 17.7 pp | **Within noise** |
+
+**What still stands:** the central claim — the shipped `S = 3.0` is badly chosen and
+lowering it is worth tens of accuracy points at no privacy cost — survives at
+`m = 50` by better than 2×, and the step-size mechanism in §9 survives by ~7×. The
+ε-invariance gate (§7.0) and every noise measurement (§2, §7.1) are unaffected:
+they are measurements of the noise distribution itself, and match closed form to
+3–4 significant figures regardless of seed.
+
+**What does not stand:** the distinction between `S = 1.1` and `S = 0.5` at
+`m ≥ 50` is **within noise** and should not have been reported as a ranking. The
+"plateaus as predicted" reading in §7.2, and the ordering of the ratio columns in
+§8.1, rest on differences smaller than the run-to-run spread. The recommendation
+of `S = 0.5` over `S = 1.1` is supported at `m = 20` and *not* at `m ≥ 50`.
+
+**Caveat on the caveat:** the spread above was measured at `S = 3.0`, the row that
+was asked for. Spread is clearly heterogeneous — it is largest at `m = 50`, where
+that configuration sits exactly at the edge of trainability and outcomes are
+bimodal (a run either takes off or does not), and smallest at `m = 20`, where every
+run is uniformly dead. Runs that train steadily are likely far more stable: the
+`S = 0.5`, `m = 50` cell had `best == final == 0.7348` on a smooth curve, and the
+non-DP control (§8) is *exactly* reproducible at every cohort. **Spread at
+`S = 0.5` was not measured**, so the ratios in §8.1 carry real but unquantified
+uncertainty. They should not be read to three significant figures.
+
+### 10.4 What would make this reproducible
+
+Not applied, and not applicable from the harness:
+
+1. **A seedable DP query.** Pass a per-round seed derived from a master seed into
+   `GaussianSumQuery`, so noise is independent across rounds but reproducible
+   across runs. Requires changing the mechanism under test and getting the
+   independence right; a wrong implementation silently invalidates the ε.
+2. **Report medians over repeats** instead of single runs. Cheapest honest fix, and
+   the right one for any figure meant to be compared — cost is a linear multiple of
+   compute.
+3. **Upstream.** Neither TFF nor TF Privacy exposes a seed on this path; a fix
+   belongs there.
+
+Until one of those, **DP figures in this document are single draws from a
+distribution with a spread of order 15–30 accuracy points at the marginal cohort
+sizes.** Conclusions are drawn only from effects larger than that, as tabulated
+above.
 
 ---
 
@@ -614,12 +764,23 @@ Item 4 above should be read as item 1.
 
 ### Recommended clipping norm
 
-**`l2_clip_norm = 0.5`, with the caveat that it is the best value tested rather
-than a located optimum.** It wins or ties in every column of §7 and never
-underperforms: at `m ≥ 50` it is best outright, and at `m ≤ 20`, where clipping
-binds and SNR is fixed at `m/(z·√d)` regardless, it is still best because a smaller
-clip is a smaller step and the runs stay numerically alive (§9) — `S = 0.5` was the
-only `m = 5` configuration not fully NaN by round 20. The theoretical justification
+**`l2_clip_norm = 0.5`, with two caveats: it is the best value tested rather than a
+located optimum, and at `m ≥ 50` it is not statistically separable from 1.1.**
+
+It wins or ties in every column of §7 and never underperforms. The support is
+uneven, and §10 is the reason to state which parts are load-bearing:
+
+- **Against `S = 3.0`: decisive.** 63.5 pp at `m = 50`, better than 2× the spread.
+- **Against `S = 1.1` at `m = 20`: decisive.** 39.8 pp against a 4.7 pp spread, and
+  §9 independently confirms the mechanism at ~7× the spread.
+- **Against `S = 1.1` at `m ≥ 50`: not established.** Differences of 0.5–8.2 pp
+  against a 16–30 pp spread. Choose 0.5 over 1.1 there because it is never worse
+  and is much better where the two do separate, not because the sweep showed it
+  winning.
+
+At `m ≤ 20`, where clipping binds and SNR is fixed at `m/(z·√d)` regardless, a
+smaller clip is a smaller step and the runs stay numerically alive (§9) —
+`S = 0.5` was the only `m = 5` configuration not fully NaN by round 20. The theoretical justification
 is that the clip should sit near the typical update norm: the across-training
 median is 0.984 at `m = 5` but falls to 0.670, 0.455 and 0.289 at `m = 50`, 100 and
 200, so 0.5 sits sensibly inside that range, whereas the current 3.0 is slack
@@ -649,12 +810,16 @@ python scripts/diagnose_dp.py --experiment cohort_baseline --out docs/_cohort_ba
 python scripts/diagnose_dp.py --experiment step_size       --out docs/_step_size.json       > ss.log 2>&1
 ```
 
-DP runs are reproducible in configuration but not bit-identical: `clip_sweep` calls
-`measure_applied_noise` before each cell, which consumes TF RNG state, so its
-`S = 3.0` column differs from §6 by a few points despite the same seed and config.
-Run-to-run spread on these runs is a few accuracy points — §9's within-process
-controls (0.2726 and 0.5169) sit that far from their §7 counterparts (0.2891 and
-0.5219) while reproducing the 24-point gap between them.
+```bash
+python scripts/diagnose_dp.py --experiment repeatability --out docs/_repeatability.json > r.log 2>&1
+```
+
+Non-DP runs are exactly reproducible. **DP runs are not, and cannot be made so
+from this harness** — the noise is drawn inside TFF's executor, which never sees
+`tf.random.set_seed`. Measured spread is 4.7–29.5 accuracy points depending on
+cohort size. See §10 for the mechanism, the evidence, and which conclusions in
+this document survive that spread; read no DP figure here to three significant
+figures.
 
 Raw per-round data for every run in this document is committed alongside it as
 `docs/_*.json`. Do not pipe the script's stdout into `grep`/`tail`: TFF leaves a

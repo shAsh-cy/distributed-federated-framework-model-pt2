@@ -191,6 +191,15 @@ price of this experimental design. At m ≥ 50 with a correctly chosen clip,
 client-level DP at ε = 6.228 costs **3–5 % of achievable accuracy**; at m = 200 it
 costs nothing measurable, and the 57 % there is entirely the thin-shard penalty.
 
+> **Every DP number above is a single run, and DP runs here are not reproducible.**
+> TF Privacy draws the Gaussian noise from an unseeded initialiser executed inside
+> TFF's executor, which never sees `tf.random.set_seed`; neither library exposes a
+> seed on that path. Measured run-to-run spread is **4.7–29.5 accuracy points**
+> depending on cohort size. The `S` = 3.0 → 0.5 improvement and the cohort trend are
+> several times larger than that and hold; the `S` = 1.1 vs `S` = 0.5 ordering at
+> m ≥ 50 is **within noise** and is not a ranking. The no-DP row is exactly
+> reproducible. Details and a per-claim breakdown: §10 of the diagnosis.
+
 The best configuration — m = 50, `S` = 0.5, **73.48 %** — was **still improving when
 the 20-round budget ran out**: it peaked at round 20, and mean accuracy over rounds
 11–20 (70.69 %) was well above rounds 1–10 (48.21 %). It is a lower bound, not a
@@ -251,11 +260,17 @@ python -m fl.server --config configs/default.yaml --metrics-out results/run.json
 python -m fl.client --config configs/default.yaml --server 127.0.0.1:8080   # ×N
 ```
 
-Reproduce the three recorded runs, then print the comparison table:
+Re-run the three recorded configurations, then print the comparison table:
 
 ```bash
 ./scripts/run_all_experiments.sh
 ```
+
+The no-DP run reproduces its recorded 86.93 % exactly. **The two DP runs will not
+reproduce their recorded numbers**, for the reason given under *Results*: the
+Gaussian noise is drawn inside TFF's executor from an unseeded initialiser, and
+neither TFF nor TensorFlow Privacy exposes a seed on that path. Both stay at
+chance at this cohort size, which is the finding; the exact figure is a draw.
 
 gRPC stubs are generated on import from `fl/proto/fl_comm.proto`, so there is no
 separate build step and the `.proto` stays the single source of truth.
