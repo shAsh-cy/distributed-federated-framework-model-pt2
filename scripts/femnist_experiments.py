@@ -302,6 +302,48 @@ def exp_baseline(writers: int, seeds: tuple[int, ...], epochs: int) -> dict:
     }
 
 
+def exp_nodp_control(
+    writers: int,
+    seeds: tuple[int, ...],
+    rounds: int,
+    cohorts: tuple[int, ...],
+) -> dict:
+    """Federated no-DP control at selected cohort sizes.
+
+    Interpreting the DP sweep requires knowing what plain FedAvg achieves on
+    the identical population, cohorts and round budget: without this, a flat
+    DP curve cannot be attributed to noise as opposed to FedAvg simply not
+    getting far in 20 rounds on thin natural shards. The centralised baseline
+    cannot answer that -- it takes ~15,000 gradient steps per epoch, while a
+    federated round takes 5 per client.
+    """
+    train, test, shards = load_femnist(num_clients=writers, seed=seeds[0])
+    cells = []
+    for m in cohorts:
+        runs = [
+            simulate(
+                train=train,
+                test=test,
+                shards=shards,
+                clients_per_round=m,
+                rounds=rounds,
+                dp=False,
+                seed=seed,
+                label=f"nodp/m={m}/seed={seed}",
+            )
+            for seed in seeds
+        ]
+        summary = _summary(runs)
+        LOGGER.info(
+            "NODP m=%d DONE: mean_final=%.4f range=%.4f",
+            m,
+            summary["mean_final"],
+            summary["range_final"],
+        )
+        cells.append({"m": m, "summary": summary, "runs": runs})
+    return {"writers": writers, "rounds": rounds, "cells": cells}
+
+
 def exp_sweep(
     writers: int,
     seeds: tuple[int, ...],
@@ -422,7 +464,7 @@ def exp_clip_bracket(
     }
 
 
-EXPERIMENTS = ("entropy", "baseline", "sweep", "clip_bracket")
+EXPERIMENTS = ("entropy", "baseline", "sweep", "nodp_control", "clip_bracket")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -435,6 +477,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--clip", type=float, default=DEFAULT_CLIP)
     parser.add_argument("--m", type=int, default=None, help="cohort size for clip_bracket")
     parser.add_argument("--clips", default=",".join(str(c) for c in BRACKET_CLIPS))
+    parser.add_argument(
+        "--cohorts", default="50,500", help="cohort sizes for nodp_control (comma-separated)"
+    )
     parser.add_argument("--epochs", type=int, default=5, help="baseline epochs")
     parser.add_argument("--out", default=None)
     parser.add_argument("--log-level", default="INFO")
@@ -449,6 +494,9 @@ def main(argv: list[str] | None = None) -> int:
         result = exp_baseline(args.writers, seeds, args.epochs)
     elif args.experiment == "sweep":
         result = exp_sweep(args.writers, seeds, args.target_epsilon, args.clip, args.rounds)
+    elif args.experiment == "nodp_control":
+        cohorts = tuple(int(c) for c in args.cohorts.split(","))
+        result = exp_nodp_control(args.writers, seeds, args.rounds, cohorts)
     else:
         if args.m is None:
             parser.error("--m is required for clip_bracket")
