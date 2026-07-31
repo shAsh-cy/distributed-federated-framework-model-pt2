@@ -57,6 +57,46 @@ def load_fashion_mnist() -> tuple[Dataset, Dataset]:
     return _prepare(x_train, y_train), _prepare(x_test, y_test)
 
 
+#: Classes per dataset. The model output size and every label histogram are
+#: derived from this, never hard-coded at a call site.
+DATASET_NUM_CLASSES: dict[str, int] = {"fashion_mnist": 10}
+
+
+def dataset_num_classes(dataset: str) -> int:
+    """Number of classes for a dataset name from config."""
+    try:
+        return DATASET_NUM_CLASSES[dataset]
+    except KeyError:
+        raise ValueError(
+            f"unknown dataset {dataset!r}; available: {sorted(DATASET_NUM_CLASSES)}"
+        ) from None
+
+
+def load_federated(data_cfg, seed: int = 42) -> tuple[Dataset, Dataset, list[np.ndarray]]:
+    """Load a dataset and its client partition from a :class:`fl.config.DataConfig`.
+
+    The single entry point every runner uses, so switching dataset is a config
+    change and nothing else. Returns ``(train, test, shards)`` where ``shards``
+    is one sorted index array into ``train`` per client.
+
+    For ``fashion_mnist`` the partition is synthetic (IID or Dirichlet
+    label-skew over a pooled dataset).
+    """
+    if data_cfg.dataset == "fashion_mnist":
+        train, test = load_fashion_mnist()
+        shards = partition(
+            train.y,
+            num_clients=data_cfg.num_clients,
+            scheme=data_cfg.partition,
+            alpha=data_cfg.dirichlet_alpha,
+            seed=seed,
+        )
+        return train, test, shards
+    raise ValueError(
+        f"unknown dataset {data_cfg.dataset!r}; available: {sorted(DATASET_NUM_CLASSES)}"
+    )
+
+
 def partition_iid(
     num_examples: int, num_clients: int, rng: np.random.Generator
 ) -> list[np.ndarray]:
@@ -170,19 +210,33 @@ def partition(
     raise ValueError(f"unknown partition scheme {scheme!r}; expected 'iid' or 'dirichlet'")
 
 
-def label_distribution(labels: np.ndarray, shard: np.ndarray) -> np.ndarray:
-    """Per-class counts for one shard, length :data:`NUM_CLASSES`."""
-    return np.bincount(np.asarray(labels).reshape(-1)[shard], minlength=NUM_CLASSES)
+def label_distribution(
+    labels: np.ndarray, shard: np.ndarray, num_classes: int = NUM_CLASSES
+) -> np.ndarray:
+    """Per-class counts for one shard, length ``num_classes``."""
+    return np.bincount(np.asarray(labels).reshape(-1)[shard], minlength=num_classes)
 
 
-def partition_summary(labels: np.ndarray, shards: list[np.ndarray]) -> list[dict]:
+def label_entropy(counts: np.ndarray) -> float:
+    """Shannon entropy (nats) of a label-count vector; empty counts give 0."""
+    counts = np.asarray(counts, dtype=np.float64)
+    total = counts.sum()
+    if total <= 0:
+        return 0.0
+    p = counts[counts > 0] / total
+    return float(-(p * np.log(p)).sum())
+
+
+def partition_summary(
+    labels: np.ndarray, shards: list[np.ndarray], num_classes: int = NUM_CLASSES
+) -> list[dict]:
     """Human-readable per-client summary, logged by the server at startup."""
     return [
         {
             "client_index": cid,
             "num_examples": int(shard.size),
-            "label_counts": label_distribution(labels, shard).tolist(),
-            "num_classes_present": int((label_distribution(labels, shard) > 0).sum()),
+            "label_counts": label_distribution(labels, shard, num_classes).tolist(),
+            "num_classes_present": int((label_distribution(labels, shard, num_classes) > 0).sum()),
         }
         for cid, shard in enumerate(shards)
     ]

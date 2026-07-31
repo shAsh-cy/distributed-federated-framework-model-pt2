@@ -20,7 +20,7 @@ import grpc
 import numpy as np
 
 from .config import Config
-from .data import load_fashion_mnist, partition
+from .data import load_federated
 from .models import build_model, compile_for_training
 from .proto import fl_comm_pb2, fl_comm_pb2_grpc
 from .serialization import proto_to_weights, weights_to_proto
@@ -99,15 +99,9 @@ class FederatedClient:
         if self.shard_index is None:
             raise RuntimeError("register() must be called before load_data()")
 
-        if train is None:
-            train, _test_held_by_server_only = load_fashion_mnist()
-        if shards is None:
-            shards = partition(
-                train.y,
-                num_clients=self.config.data.num_clients,
-                scheme=self.config.data.partition,
-                alpha=self.config.data.dirichlet_alpha,
-                seed=self.config.seed,
+        if train is None or shards is None:
+            train, _test_held_by_server_only, shards = load_federated(
+                self.config.data, seed=self.config.seed
             )
         shard = train.take(shards[self.shard_index])
         self.x, self.y = shard.x, shard.y

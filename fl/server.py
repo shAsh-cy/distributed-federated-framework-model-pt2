@@ -617,10 +617,10 @@ def build_evaluator(model_name: str, test_x: np.ndarray, test_y: np.ndarray, bat
 def build_server(config: Config) -> FederatedServer:
     """Assemble a server from a config: model, held-out test set, aggregator."""
     from .aggregation import compute_epsilon, make_aggregator
-    from .data import load_fashion_mnist
+    from .data import load_federated
     from .models import build_model
 
-    _train, test = load_fashion_mnist()
+    _train, test, _shards = load_federated(config.data, seed=config.seed)
     LOGGER.info("server holds %d held-out test examples; no client sees them", len(test))
 
     initial_weights = build_model(config.model.name, seed=config.seed).get_weights()
