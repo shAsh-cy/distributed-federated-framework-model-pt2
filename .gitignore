@@ -45,3 +45,6 @@ Thumbs.db
 
 # Archives
 *.zip
+
+# Diagnostic run logs (the JSON alongside them is committed)
+docs/*.log
