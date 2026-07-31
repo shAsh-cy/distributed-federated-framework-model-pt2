@@ -6,7 +6,9 @@ differential privacy is applied at aggregation through TensorFlow Federated, and
 the privacy budget is computed rather than asserted.
 
 Every number below was measured by running this code. The raw per-round metrics
-are committed in [`results/`](results/).
+are committed: [`results/`](results/) for the three shipped configurations,
+[`docs/`](docs/) (`_*.json`) for the sweep, control, replication and diagnosis
+data.
 
 ---
 
@@ -135,7 +137,7 @@ configurations differ **only** in their privacy block.
 
 | Configuration | Noise `z` | Clip `S` | δ | **ε (computed)** | **Final accuracy** (round 20) |
 |---|---|---|---|---|---|
-| No DP | — | — | — | — (no guarantee) | **86.93 %** |
+| No DP | — | — | — | non-private (no guarantee) | **86.93 %** |
 | Moderate noise | 2.0 | 3.0 | 1 × 10⁻⁵ | **6.228** | **10.00 %** |
 | High noise | 6.0 | 3.0 | 1 × 10⁻⁵ | **1.639** | **10.00 %** |
 
@@ -143,7 +145,23 @@ Accuracy is reported at round 20 throughout this README. The DP rows use a
 clipping norm now known to be badly chosen — see below; they are the numbers this
 repo's committed configs actually produce, not the best available at that ε.
 
-Untrained baseline: **12.25 %**. Without DP the model peaks at 87.69 % and ends
+**The corrected configuration** — the clip re-chosen from measured update norms
+(`S` = 0.5) and the cohort raised to 50 of a 100-client population (q = 0.5
+unchanged). Replicated at three seeds, both arms, no seed selected; figures are
+means:
+
+| Configuration | Noise `z` | Clip `S` | Clients/round | δ | **ε (computed)** | **Final accuracy** (round 20) |
+|---|---|---|---|---|---|---|
+| **DP, corrected clip** | 2.0 | **0.5** | 50 | 1 × 10⁻⁵ | **6.228** | **73.4 %** — mean of 3 seeds (72.85 / 73.28 / 73.95), range 1.1 pp |
+| Matched control | — | — | 50 | — | non-private (no guarantee) | 76.9 % — mean of same 3 seeds (77.16 / 77.88 / 75.53), range 2.4 pp |
+
+Same ε as the collapsed "moderate" row — the clip does not enter the ε
+computation — yet 73.4 % instead of 10 %. The DP cost against its matched control
+is **3.5 pp (ratio 0.954)**. This configuration is established by the sweep below
+and is not yet the shipped default; the committed configs still carry `S` = 3.0.
+
+Untrained baseline: **12.25 %** (non-private, untrained — chance is 10 %). Without
+DP the model peaks at 87.69 % and ends
 at 86.93 %. Every run moved 90,025,400 bytes server→client — exactly 20 rounds ×
 5 clients × 900,254 bytes, the serialised size of the model — and 90,029,290
 bytes back, the small excess being the sample count and version fields each
@@ -167,9 +185,11 @@ sensitivity reduction. Lowering it costs nothing in privacy: ε is computed from
 `z = σ/S`, which is already normalised by `S`, so ε is **bitwise identical** at
 every clipping norm.
 
-Both fixes together, at the **same ε = 6.228**, measured in-process over a
-15-cell sweep (`S ∈ {3.0, 1.1, 0.5}` × `m ∈ {5, 20, 50, 100, 200}`) — final
-accuracy:
+Both fixes together, measured in-process over a 15-cell sweep
+(`S ∈ {3.0, 1.1, 0.5}` × `m ∈ {5, 20, 50, 100, 200}`) — final accuracy. **Every
+DP cell in this table carries ε = 6.228 at δ = 1 × 10⁻⁵** (ε is bitwise identical
+across the three clip values — verified before the sweep ran); the *no-DP
+ceiling* row is non-private, with no guarantee:
 
 | Final accuracy | m = 5 | m = 20 | m = 50 | m = 100 | m = 200 |
 |---|---|---|---|---|---|
@@ -198,15 +218,50 @@ agreeing at a ratio of ≈ 0.95**. With a correctly chosen clip, client-level DP
 penalty at m = 200, though the non-private control was itself unstable at that
 cohort size.
 
-> **Every DP number in the grid above is a single run (the m = 50 winning cell is
-> additionally replicated below), and DP runs here are not reproducible.**
-> TF Privacy draws the Gaussian noise from an unseeded initialiser executed inside
-> TFF's executor, which never sees `tf.random.set_seed`; neither library exposes a
-> seed on that path. Measured run-to-run spread is **4.7–29.5 accuracy points**
-> depending on cohort size. The `S` = 3.0 → 0.5 improvement and the cohort trend are
-> several times larger than that and hold; the `S` = 1.1 vs `S` = 0.5 ordering at
-> m ≥ 50 is **within noise** and is not a ranking. The no-DP row is exactly
-> reproducible. Details and a per-claim breakdown: §10 of the diagnosis.
+**On "how many clients would you need":** every client-count statement here rests
+on the two measured curves — the no-DP control (86.9 / 83.0 / 77.2 / 71.5 /
+57.4 % across m = 5 → 200) and the ratio row above — not on an extrapolation. The
+diagnosis also fits the signal-decay exponent `g ∝ m^−k`, **k = 0.828 ± 0.095**
+(R² = 0.96), but that number is reported **only as a quantification of the
+q = 0.5 / N = 2m confound**: shards shrink as the cohort grows, so k conflates
+shard size with cohort size and must not be extrapolated. Taken literally it
+would imply ~735,000 clients per round drawn from a 60,000-example dataset — an
+impossibility that shows what the exponent actually measures. On the DP side,
+the optimum cohort at `S` = 0.5 lies **near m = 50, without claiming to have
+located it**: 73.5 % at m = 50 versus 68.2 % at m = 100 is a difference inside
+the measured run-to-run spread.
+
+### DP runs are not bit-reproducible — localised, and left unfixed deliberately
+
+Every DP number in the grid above is a single run (the m = 50 winning cell is
+additionally replicated below), and two DP runs of the identical config and seed
+differ. The cause was localised step by step rather than guessed:
+
+1. **The non-private path is exactly reproducible** — the no-DP control reproduces
+   its recorded 86.93 % to the digit, every time.
+2. **The suspect initialiser is innocent on its own.** TF Privacy draws its
+   Gaussian noise via `tf.random_normal_initializer` with no `seed` argument, but
+   called directly that initialiser honours `tf.random.set_seed` — reproducible.
+3. **Still reproducible under `tf.function`** — graph tracing does not lose the
+   seed either.
+4. **Inside TFF's DP aggregator it stops being reproducible.** TFF serialises the
+   aggregation to a computation proto and executes it in its own executor, which
+   never sees the calling process's global seed. **That serialisation boundary is
+   where determinism is lost.** Neither
+   `DifferentiallyPrivateFactory.gaussian_fixed` nor `GaussianSumQuery` exposes a
+   seed parameter, so it is not fixable from this repo's code.
+
+Forcing a seed anyway was considered and declined: it would mean injecting
+per-round seeds into the very mechanism under test, and done wrong — a seed
+reused across rounds — it would correlate noise draws that the ε composition
+requires to be independent, silently voiding the privacy guarantee while every
+number still looked fine.
+
+Consequence for reading the grid: measured run-to-run spread is **4.7–29.5
+accuracy points** depending on cohort size. The `S` = 3.0 → 0.5 improvement and
+the cohort trend are several times larger than that and hold; the `S` = 1.1 vs
+`S` = 0.5 ordering at m ≥ 50 is **within noise** and is not a ranking. Details
+and a per-claim breakdown: §10 of the diagnosis.
 
 The winning cell was replicated at three seeds, both arms, no seed selected:
 DP final accuracy 72.85 / 73.28 / 73.95 % (**mean 73.4 %**, range 1.1 pp) against
@@ -236,9 +291,9 @@ docker compose -f docker/docker-compose.yml up --build --scale client=5
 ```
 
 That builds one image, starts a server and five client containers, and runs 5
-rounds to roughly 77 % accuracy (`configs/docker.yaml`). Verified end to end from
-a fresh clone; the server writes `/app/results/docker_run.json` and every
-container exits 0.
+rounds to roughly 77 % accuracy (`configs/docker.yaml` — a non-private demo
+config, `privacy.enabled: false`). Verified end to end from a fresh clone; the
+server writes `/app/results/docker_run.json` and every container exits 0.
 
 Clients take no `--cid`. A client registering without an id is assigned the next
 free shard, so N replicas claim N distinct shards with no per-replica config —
@@ -342,6 +397,16 @@ Stated plainly, because each of these is a real boundary of what was built.
   the server itself. A server that wanted to inspect or invert a single client's
   update could do so.
 
+- **One seed per cell across the main sweep, and DP runs do not reproduce at a
+  fixed seed** (see *Results* for why). Measured run-to-run spread is
+  **4.7–29.5 accuracy points** depending on cohort size, so comparisons below
+  roughly 10 points are not resolved by this data. What survives the spread: the
+  clipping-norm collapse, ≈ 55 pp at about 2× the worst-case spread, and the
+  clip-as-step-size mechanism, 32 pp at about 7×. What was retracted: the
+  `S` = 0.5-over-`S` = 1.1 ranking at m ≥ 50, where differences of 0.5–8.2 pp are
+  within noise. The one exception is the winning cell, replicated at three seeds
+  per arm with a spread of 1.1 pp.
+
 - **There is no adversarial or Byzantine client handling.** Malformed payloads,
   NaN/Inf weights, wrong shapes, stale versions and unregistered senders are all
   rejected — but those are integrity checks, not a threat model. A well-formed
@@ -385,10 +450,11 @@ above and contradicts no claim made above it.
   clients. (A scale item, not a DP item — DP itself is built; see *Results* and
   [docs/dp_diagnosis.md](docs/dp_diagnosis.md).)
 - **Adaptive clipping** (quantile-based, as TFF's adaptive factory supports) in
-  place of any fixed clipping norm. The measured optimum moves with cohort size —
-  the median update norm falls from 0.984 at m = 5 to 0.289 at m = 200 — so no
+  place of any fixed clipping norm. The update norm a clip should track falls
+  with cohort size — median 0.984 at m = 5 down to 0.289 at m = 200 — so no
   single constant is right across configurations, and the sweep above does not
-  bracket the optimum at large cohorts.
+  claim to have located the optimum at any cohort (it bottoms out at `S` = 0.5
+  with SNR still rising).
 - **Genuine multi-host deployment**, replacing single-host containers, to
   exercise real network latency, partitions and heterogeneous clients.
 - **Persistent server state**, so a restart resumes at the current model version
