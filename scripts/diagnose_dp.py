@@ -602,6 +602,61 @@ def exp_repeatability() -> dict:
     }
 
 
+def exp_replication() -> dict:
+    """Three seeds of the winning cell and its matched control.
+
+    A: clip=0.5, m=50, DP on (z=2.0, so epsilon=6.228 at delta=1e-5).
+    B: same cohort/population, DP off, clipping disabled (FedAvgAggregator).
+
+    DP noise is unseedable from here (see module docstring), so the seed only
+    fixes the data partition, init and cohort draws; arm A still varies beyond
+    it. That is fine -- the point is the distribution, not determinism. Arm B is
+    exactly seed-determined.
+    """
+    seeds = (42, 43, 44)
+    arms: dict[str, list[dict]] = {"dp": [], "no_dp": []}
+    for seed in seeds:
+        arms["dp"].append(
+            simulate(
+                num_clients=100,
+                clients_per_round=50,
+                dp=True,
+                noise_multiplier=2.0,
+                l2_clip_norm=0.5,
+                seed=seed,
+                label=f"replicate/dp/seed={seed}",
+            )
+        )
+        arms["no_dp"].append(
+            simulate(
+                num_clients=100,
+                clients_per_round=50,
+                dp=False,
+                seed=seed,
+                label=f"replicate/no-dp/seed={seed}",
+            )
+        )
+        LOGGER.info(
+            "REPLICATE seed=%s -> dp final=%.4f best=%.4f | no-dp final=%.4f best=%.4f",
+            seed,
+            arms["dp"][-1]["final_accuracy"],
+            arms["dp"][-1]["best_accuracy"],
+            arms["no_dp"][-1]["final_accuracy"],
+            arms["no_dp"][-1]["best_accuracy"],
+        )
+    summary = {}
+    for name, runs in arms.items():
+        finals = [r["final_accuracy"] for r in runs]
+        summary[name] = {
+            "seeds": list(seeds),
+            "final_per_seed": finals,
+            "mean_final": float(np.mean(finals)),
+            "range_final": float(max(finals) - min(finals)),
+        }
+    summary["mean_gap"] = summary["no_dp"]["mean_final"] - summary["dp"]["mean_final"]
+    return {"summary": summary, "runs": arms}
+
+
 def exp_cohort_baseline() -> list[dict]:
     """The same cohort grid with DP switched off, to isolate the noise term.
 
@@ -676,6 +731,7 @@ EXPERIMENTS = {
     "cohort_baseline": exp_cohort_baseline,
     "step_size": exp_step_size,
     "repeatability": exp_repeatability,
+    "replication": exp_replication,
 }
 
 
