@@ -327,6 +327,60 @@ def compute_epsilon(
     return float(accountant.get_epsilon(delta))
 
 
+def calibrate_noise_multiplier(
+    target_epsilon: float,
+    sampling_rate: float,
+    rounds: int,
+    delta: float = 1e-5,
+    rel_tol: float = 1e-4,
+    z_low: float = 1e-3,
+    z_high: float = 200.0,
+) -> float:
+    """Find the noise multiplier that achieves ``target_epsilon``, by bisection.
+
+    The inverse of :func:`compute_epsilon` in its ``noise_multiplier`` argument,
+    which is strictly decreasing (more noise, less epsilon). Needed whenever a
+    sweep holds epsilon fixed while the sampling rate varies: with a fixed
+    population N, raising the cohort m raises q = m/N, which weakens privacy
+    amplification by subsampling and demands a different z for the same budget.
+
+    Epsilon remains a computed quantity, never a knob: this function chooses the
+    *mechanism* (z) and the reported epsilon is still whatever the accountant
+    says that mechanism achieves. Callers should recompute and report
+    ``compute_epsilon(z, ...)`` for the returned z rather than quoting the
+    target.
+
+    Raises:
+        ValueError: if the target lies outside what ``[z_low, z_high]`` can
+            reach at these parameters.
+    """
+    if target_epsilon <= 0:
+        raise ValueError(f"target_epsilon must be > 0, got {target_epsilon}")
+
+    def eps(z: float) -> float:
+        return compute_epsilon(z, sampling_rate, rounds, delta)
+
+    eps_at_high, eps_at_low = eps(z_high), eps(z_low)
+    if not eps_at_high <= target_epsilon <= eps_at_low:
+        raise ValueError(
+            f"target_epsilon {target_epsilon} is outside the reachable range "
+            f"[{eps_at_high:.4g}, {eps_at_low:.4g}] for z in [{z_low}, {z_high}] "
+            f"at q={sampling_rate}, rounds={rounds}, delta={delta}"
+        )
+
+    lo, hi = z_low, z_high  # eps(lo) >= target >= eps(hi)
+    for _ in range(200):
+        mid = (lo + hi) / 2.0
+        value = eps(mid)
+        if abs(value - target_epsilon) <= rel_tol * target_epsilon:
+            return mid
+        if value > target_epsilon:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2.0
+
+
 def make_aggregator(
     *,
     dp_enabled: bool,
