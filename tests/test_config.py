@@ -186,3 +186,45 @@ def test_config_is_frozen():
     cfg = Config()
     with pytest.raises(dataclasses.FrozenInstanceError):
         cfg.seed = 1
+
+
+# -- femnist config ----------------------------------------------------------
+
+
+def test_femnist_requires_natural_partition():
+    with pytest.raises(ConfigError, match="partitioned by writer"):
+        Config.from_dict(
+            {
+                "data": {"dataset": "femnist", "partition": "dirichlet", "num_clients": 100},
+                "model": {"name": "femnist_cnn"},
+            }
+        )
+
+
+def test_natural_partition_rejected_for_pooled_datasets():
+    with pytest.raises(ConfigError, match="real client boundaries"):
+        Config.from_dict({"data": {"dataset": "fashion_mnist", "partition": "natural"}})
+
+
+def test_femnist_valid_config_accepted():
+    cfg = Config.from_dict(
+        {
+            "data": {"dataset": "femnist", "partition": "natural", "num_clients": 1000},
+            "model": {"name": "femnist_cnn"},
+        }
+    )
+    assert cfg.data.dataset == "femnist"
+    assert cfg.clients_per_round == 500  # default C=0.5 of 1000 writers
+    assert abs(cfg.client_sampling_rate - 0.5) < 1e-12
+
+
+def test_model_dataset_mismatch_rejected_both_ways():
+    with pytest.raises(ConfigError, match="does not match data.dataset"):
+        Config.from_dict(
+            {
+                "data": {"dataset": "femnist", "partition": "natural", "num_clients": 10},
+                "model": {"name": "small_cnn"},
+            }
+        )
+    with pytest.raises(ConfigError, match="does not match data.dataset"):
+        Config.from_dict({"model": {"name": "femnist_cnn"}})
