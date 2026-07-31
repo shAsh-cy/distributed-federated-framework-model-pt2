@@ -1,0 +1,14 @@
+{
+ "entropy": {
+  "writers": 1000,
+  "train_examples": 196241,
+  "test_examples": 22639,
+  "shard_size_min": 30,
+  "shard_size_median": 159,
+  "shard_size_max": 392,
+  "pooled_label_entropy_nats": 3.6636618535291006,
+  "mean_writer_label_entropy_nats": 3.3769093154511047,
+  "median_writer_label_entropy_nats": 3.3450760152999486,
+  "uniform_entropy_62_nats": 4.127134385045092
+ }
+}
