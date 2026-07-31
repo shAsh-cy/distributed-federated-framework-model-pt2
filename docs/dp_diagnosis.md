@@ -13,8 +13,10 @@ replaces the model with noise and every later round adds more.
 
 **Second verdict, from §7–§9 — the configuration was also wrong, and this document
 originally said it could not be.** At the same ε = 6.228, lowering the clipping
-norm from 3.0 to 0.5 and raising the cohort to 50 reaches **73.48 % final accuracy
-against a 77.16 % matched non-private ceiling**. Normalised against ceilings
+norm from 3.0 to 0.5 and raising the cohort to 50 reaches **73.4 % final accuracy
+(mean of three seeds, range 1.1 pp) against a 76.9 % matched non-private ceiling
+(mean of the same three seeds, range 2.4 pp) — a DP cost of 3.5 pp (§8.2)**.
+Normalised against ceilings
 measured at the same cohort size, client-level DP costs **3–5 % of achievable
 accuracy, not 88 %**. The claim that lowering the clip "does not help" is
 **retracted** — see the retraction under Conclusions. It holds only where clipping
@@ -30,7 +32,7 @@ directly.
 | Gaussian noise magnitude destroys the signal | **Confirmed** | §2, §3 — noise ‖·‖ = 569.7 vs signal ‖·‖ ≈ 1.0 |
 | Model degenerates to predicting one class | **Confirmed** | §4 — 84.8 % then 97.4 % of all test images given the same label |
 | Bug in the DP aggregation path | **Ruled out** | §2 — measured noise matches TFF's documented formula to 4 significant figures |
-| Clipping norm *too high*, buying noise for nothing | **Confirmed** | §7 — `S` 3.0 → 0.5 at `m` = 50 moves final accuracy 10.00 % → 73.48 % at identical ε |
+| Clipping norm *too high*, buying noise for nothing | **Confirmed** | §7, §8.2 — `S` 3.0 → 0.5 at `m` = 50 moves final accuracy from 18.8 % (mean of 4 draws) to 73.4 % (mean of 3 seeds) at identical ε |
 | The cohort-size result is confounded by shrinking shards | **Confirmed** | §8 — the no-DP ceiling itself falls 86.93 % → 57.42 % across the same grid |
 | Once clipping binds, the clip acts as a server step size | **Confirmed** | §9 — a 0.4545× step at `S` = 1.1 recovers the full 27-point gap to `S` = 0.5 |
 | DP non-determinism is caused by the diagnostic instrumentation | **Ruled out** | §10 — two passes with no measurement anywhere still differ; the noise is drawn inside TFF's executor, which never sees `tf.random.set_seed` |
@@ -57,6 +59,12 @@ the rest is trustworthy:
 | This harness, same seed | **0.8693** | 0.8758 | 0.1225 |
 
 Final accuracy matches exactly. The harness is faithful.
+
+**Reporting convention.** Headline figures throughout this document are **final
+accuracy** — the reading at round 20 — because that is what a deployment gets.
+Where best accuracy is also shown the column is labelled; best is diagnostic
+(it distinguishes "never trained" from "trained and then destabilised") and is
+never the headline.
 
 **Two documented deviations.** (1) One Keras model is reused across clients with
 optimiser slots zeroed between them, rather than one persistent model per client;
@@ -152,13 +160,13 @@ it is replaced by a random walk.
 
 ## 3. Ablation — clipping alone, noise alone, both
 
-Three runs, identical seed, 10 clients, `m = 5`, 20 rounds.
+Three runs. Every arm's full condition is tabulated so none has to be inferred:
 
-| Run | `z` | `S` | Final accuracy | Best |
-|---|---|---|---|---|
-| **(a) clipping only** (`z = 0`, `S = 3.0`) | 0 | 3.0 | **0.8512** | 0.8634 |
-| **(b) noise only** (clipping disabled) | 6 × 10⁻⁶ | 10⁶ | **0.0000** | 0.0096 |
-| **(c) both** — production config | 2.0 | 3.0 | **0.0000** | 0.1005 |
+| Run | `z` | `S` (clip) | `m` | `N` | Rounds | Seed | **Final accuracy** | Best accuracy |
+|---|---|---|---|---|---|---|---|---|
+| **(a) clipping only** | 0 | 3.0 | 5 | 10 | 20 | 42 | **0.8512** | 0.8634 |
+| **(b) noise only** (clip cannot bind) | 6 × 10⁻⁶ | 10⁶ | 5 | 10 | 20 | 42 | **0.0000** | 0.0096 |
+| **(c) both** — production config | 2.0 | 3.0 | 5 | 10 | 20 | 42 | **0.0000** | 0.1005 |
 
 Run (b) needs explanation. TFF ties the noise standard deviation to the clipping
 norm (`stddev = clip · z`), so noise cannot be varied independently through the
@@ -174,6 +182,22 @@ non-private baseline. The residual gap is the cost of clipping the round-1 updat
 alone with no clipping at all, collapses just as completely as production.
 
 This is the decisive experiment: **clipping is fine, noise is the cause.**
+
+**Resolving an apparent conflict with the recorded results.** Run (c) reports
+final accuracy 0.0000 while `results/dp_moderate.json` — the real gRPC run at the
+same nominal condition (`z = 2.0`, `S = 3.0`, `m = 5`, `N = 10`, 20 rounds, seed
+42) — recorded 10.00 %. These are not a contradiction; they are **two draws from
+a bimodal outcome distribution at the edge of trainability**. At this
+configuration the noise either drives the weights to NaN (the harness reads
+0.0000) or leaves a finite model that predicts a single class for nearly every
+input (reads exactly 10.00 % on the balanced test set, §4). Both endpoints are
+reachable from the identical config and seed because the DP noise itself is not
+seedable (§10) — the repeatability run reproduces exactly this split at `m = 5`,
+one pass ending at 0.0000 and the other at 0.1000 (§10.1). A reporting difference
+stacks on top: production rejects NaN updates and freezes on the last finite
+model, so it maps *both* endpoints to ≈ 10 %, while the harness lets NaN runs
+read 0.0000 (see *Method*). "Collapse" in this document means either endpoint;
+neither number is more correct than the other.
 
 ---
 
@@ -207,7 +231,7 @@ test set gives exactly 1000/10000.
 Cohort held at `m = 5` (the production setting), `S = 3.0`, 20 rounds, seed 42.
 ε at δ = 10⁻⁵.
 
-| `z` | ε | ‖noise‖ | **Final accuracy** | Best | Predicted-class counts | Largest share |
+| `z` | ε | ‖noise‖ | **Final accuracy** | Best accuracy | Predicted-class counts | Largest share |
 |---|---|---|---|---|---|---|
 | 0.0 | ∞ (none) | 0.0 | **0.8512** | 0.8634 | `[1197, 979, 898, 965, 1632, 1035, 327, 978, 990, 999]` | 16 % |
 | 0.1 | 1060.1 | 28.5 | **0.7009** | 0.7917 | `[1285, 891, 1417, 1120, 1062, 2083, 184, 742, 931, 285]` | 21 % |
@@ -345,6 +369,13 @@ weight scale, the weights explode, and `0.0000` is a NaN model rather than a
 prediction. Their all-rounds medians are not real measurements and are marked
 *diverged* rather than tabulated. `m = 5` is excluded from every conclusion below.
 
+**The final-vs-best gap is itself diagnostic.** The winning cell (`S = 0.5`,
+`m = 50`) has `final == best` exactly — 0.7348 at round 20 — meaning it was still
+improving when the round budget ran out and never destabilised. Contrast
+`S = 3.0`, `m = 50`: best 0.4507 mid-run, final 0.1000 — it reached 45 % and then
+collapsed back to chance. Same ε, same cohort; the difference between "still
+climbing" and "climbed and was destroyed" is the clipping norm.
+
 ### 7.2 Two regimes, and the boundary moves
 
 Where clipping binds (`S < ‖Δw‖`), signal and noise both scale with `S`, so SNR
@@ -430,13 +461,25 @@ more accuracy than the noise does past `m ≈ 100`.
 DP accuracy over its matched ceiling, at the winning clip `S = 0.5`, final accuracy
 throughout:
 
-| `m` | DP final | No-DP ceiling | **Ratio** | Gap |
+| `m` | DP final | No-DP ceiling (final) | **Ratio** | Gap |
 |---|---|---|---|---|
 | 5 | 0.1123 | 0.8693 | **0.129** | 75.7 pp |
 | 20 | 0.5219 | 0.8304 | **0.628** | 30.8 pp |
-| 50 | 0.7348 | 0.7716 | **0.952** | 3.7 pp |
+| 50 | 0.7348 | 0.7716 | **0.952** | 3.7 pp * |
 | 100 | 0.6815 | 0.7154 | **0.953** | 3.4 pp |
-| 200 | 0.5745 | 0.5742 | **1.001** | −0.0 pp |
+| 200 | 0.5745 | 0.5742 | 1.001 † | −0.0 pp † |
+
+\* Single draw from the grid. The `m = 50` cell is replicated at three seeds in
+§8.2, which is where the headline gap comes from: mean 3.5 pp, per-seed 4.3 / 4.6
+/ 1.6 pp.
+
+† The `m = 200` ratio is not a real measurement of DP's cost. That control is the
+only cell in §8 with a large final-vs-best gap (final 0.5742, best 0.6539) — it was
+still oscillating at round 20, so its *final* reading is a draw, not a ceiling.
+Final-to-final gives 1.001; against the control's best it is 0.5745 / 0.6539 ≈
+**0.88**. The honest statement is **no measurable penalty at `m = 200`, though the
+non-private control was itself unstable at this cohort size** — not that DP is
+free there.
 
 The same ratio at every clip, which is where the clipping norm's real effect shows:
 
@@ -446,20 +489,23 @@ The same ratio at every clip, which is where the clipping norm's real effect sho
 | 20 | 0.8304 | 0.120 | 0.149 | 0.628 |
 | 50 | 0.7716 | 0.130 | 0.846 | **0.952** |
 | 100 | 0.7154 | 0.554 | 0.899 | **0.953** |
-| 200 | 0.5742 | 0.810 | 0.992 | **1.001** |
+| 200 | 0.5742 | 0.810 | 0.992 | 1.001 † |
 
 **This is the only number that speaks to DP's price rather than the experimental
-design's.** At `m ≥ 50` with a correctly chosen clip, client-level DP at ε = 6.228
-costs **3–5% of achievable accuracy** — and at `m = 200` it costs nothing
-measurable (ratio 1.001; the noise is fully averaged away and the 57.4% figure is
-entirely the thin-shard penalty).
+design's.** The claim rests on `m = 50` and `m = 100`, where both arms are stable:
+two cohorts independently landing at ratio ≈ 0.95, with `m = 200` consistent with
+the same value (its ratio brackets 0.88–1.00 depending on which reading of its
+unstable control is used). **Three cohorts agreeing at ≈ 0.95** is the finding —
+client-level DP at ε = 6.228 costs on the order of 5 % of achievable accuracy once
+the cohort and clip are right — not any single gap figure.
 
 > **Precision warning.** Denominators here are exactly reproducible; numerators are
 > single DP runs, and DP runs have a measured spread of 4.7–29.5 accuracy points at
-> `S = 3.0` (§10). Spread was **not** measured at `S = 0.5`, and there is reason to
-> expect it is smaller — these cells train smoothly rather than sitting at the edge
-> of trainability — but that is an expectation, not a measurement. Read these ratios
-> as "≈ 0.95 at `m = 50`–100, ≈ 1.0 at `m = 200`", not to three significant figures.
+> `S = 3.0` (§10). At `S = 0.5`, `m = 50` the spread is now measured directly —
+> **1.1 pp across three seeds (§8.2)** — confirming that cells inside the trainable
+> regime are far more stable than cells at its edge. The other `S = 0.5` cohorts
+> remain single draws. Read these ratios as "≈ 0.95 at `m = 50`–100, and consistent
+> with that at `m = 200`", not to three significant figures.
 > The qualitative claim (DP's cost is single-digit percent once the cohort and clip
 > are right, versus the 88% implied by the shipped configuration) is far larger than
 > any plausible spread and is not at risk.
@@ -467,9 +513,44 @@ entirely the thin-shard penalty).
 The headline collapse was never the price of privacy. It was the price of running
 DP at `m = 5` with a clipping norm 3× above the median update.
 
+### 8.2 Replication of the winning cell — three seeds, both arms
+
+Single draws are not a basis for a headline, so the winning cell and its matched
+control were each run at three seeds (42, 43, 44). Identical configuration
+otherwise: `m = 50`, `N = 100`, 20 rounds; arm A with DP on (`S = 0.5`,
+`z = 2.0`, ε = 6.228, δ = 10⁻⁵), arm B with DP off and clipping disabled.
+
+| Seed | A: DP final acc | B: no-DP final acc | Gap |
+|---|---|---|---|
+| 42 | 0.7285 | 0.7716 | 4.3 pp |
+| 43 | 0.7328 | 0.7788 | 4.6 pp |
+| 44 | 0.7395 | 0.7553 | 1.6 pp |
+| **Mean** | **0.7336** | **0.7686** | **3.5 pp** |
+| Range | 1.1 pp | 2.4 pp | — |
+
+**The headline is the mean: DP 73.4 % vs matched ceiling 76.9 %, a gap of
+3.5 pp (ratio 0.954).** No seed was selected; all three are reported. The range
+on the DP arm (1.1 pp) is under the ~5 pp threshold at which a point value would
+be misleading, so quoting ≈ 73 % is fair — but the mean is the number this
+document uses. The original single sweep draw (0.7348) sits inside the replicated
+range, and arm B at seed 42 reproduces the §8 control (0.7716) exactly,
+re-confirming that the non-DP path is deterministic.
+
+Two useful by-products:
+
+- **Cross-seed spread at `S = 0.5`, `m = 50` is now measured: 1.1 pp** on the DP
+  arm — two orders smaller than the 29.5 pp spread of `S = 3.0` at the same
+  cohort (§10.3). A configuration inside the trainable regime is stable; one at
+  the edge of trainability is bimodal. (The 1.1 pp conflates seed variation with
+  DP-noise variation — the noise is unseedable (§10) — but their sum bounds each.)
+- **Every seed's DP run has `final ≈ best`** (43 and 44 exactly, 42 within
+  0.4 pp): all three were still improving at round 20 and none destabilised.
+
 **How many clients would you need?** Properly posed, the question separates. The
-DP penalty is already negligible by `m = 50` (ratio 0.95) and gone by `m = 200`.
-What limits accuracy past that point is data per client, not cohort size — this
+DP penalty is already down to ≈ 5 % by `m = 50` and stays there through the
+largest cohort tested (`m = 200` shows no measurable penalty, though its control
+was unstable — see †). What limits accuracy past that point is data per client,
+not cohort size — this
 population is 60,000 examples no matter how it is divided. With shard size held
 fixed instead (each new client bringing its own data), noise falls as `1/m` while
 `g` stays put, so SNR grows as `m¹` and the DP penalty closes faster still. The
@@ -527,7 +608,7 @@ explanation, and testing it took one experiment that had not been run.
 process, with nothing in between** — no `measure_applied_noise` call anywhere in
 the experiment. If instrumentation were the cause, the two passes would agree.
 
-| `m` | Pass A | Pass B | Round-1 ‖applied‖ A | Round-1 ‖applied‖ B | Identical? |
+| `m` | Final acc, pass A | Final acc, pass B | Round-1 ‖applied‖ A | Round-1 ‖applied‖ B | Identical? |
 |---|---|---|---|---|---|
 | 5 | 0.0000 | 0.1000 | 569.108277 | 569.882132 | **No** |
 | 20 | 0.0960 | 0.1002 | 142.181407 | 142.765687 | **No** |
@@ -572,7 +653,7 @@ and it is labelled as such in the code.
 Four independent runs of the identical `S = 3.0` configuration now exist: §6, §7,
 and passes A and B. Final accuracy:
 
-| `m` | §6 | §7 | A | B | **Range** |
+| `m` | Final acc, §6 | Final acc, §7 | Final acc, A | Final acc, B | **Range** |
 |---|---|---|---|---|---|
 | 5 | 0.1319 | 0.0000 | 0.0000 | 0.1000 | 13.2 pp |
 | 20 | 0.0536 | 0.1000 | 0.0960 | 0.1002 | 4.7 pp |
@@ -586,7 +667,7 @@ Testing each reported effect against the spread at its own cohort size:
 
 | Comparison | Effect | Spread | Verdict |
 |---|---|---|---|
-| clip 3.0 → 0.5 @ `m` = 50 | 63.5 pp | 29.5 pp | **Survives** |
+| clip 3.0 → 0.5 @ `m` = 50 | ≈ 55 pp ‡ | 29.5 pp | **Survives** |
 | clip 1.1 → 0.5 @ `m` = 20 | 39.8 pp | 4.7 pp | **Survives** |
 | Step-size 0.4545× @ `m` = 20 (§9) | 32.1 pp | 4.7 pp | **Survives** |
 | clip 3.0 → 1.1 @ `m` = 50 | 55.3 pp | 29.5 pp | Marginal |
@@ -595,6 +676,13 @@ Testing each reported effect against the spread at its own cohort size:
 | clip 1.1 → 0.5 @ `m` = 50 | 8.2 pp | 29.5 pp | **Within noise** |
 | clip 1.1 → 0.5 @ `m` = 100 | 3.8 pp | 16.4 pp | **Within noise** |
 | clip 1.1 → 0.5 @ `m` = 200 | 0.5 pp | 17.7 pp | **Within noise** |
+
+‡ Computed against the **mean of the four recorded `S = 3.0`, `m = 50` draws**
+(0.1085, 0.1000, 0.1479, 0.3952 → 0.188), not against any single draw, so the
+figure does not move if someone re-runs it. An earlier version quoted 63.5 pp,
+which happened to be measured against one of the low draws. Other rows in this
+table are single-draw effects (only `S = 3.0`, `m = 50` has four draws on record)
+and carry the spread caveat accordingly.
 
 **What still stands:** the central claim — the shipped `S = 3.0` is badly chosen and
 lowering it is worth tens of accuracy points at no privacy cost — survives at
@@ -613,11 +701,12 @@ of `S = 0.5` over `S = 1.1` is supported at `m = 20` and *not* at `m ≥ 50`.
 was asked for. Spread is clearly heterogeneous — it is largest at `m = 50`, where
 that configuration sits exactly at the edge of trainability and outcomes are
 bimodal (a run either takes off or does not), and smallest at `m = 20`, where every
-run is uniformly dead. Runs that train steadily are likely far more stable: the
-`S = 0.5`, `m = 50` cell had `best == final == 0.7348` on a smooth curve, and the
-non-DP control (§8) is *exactly* reproducible at every cohort. **Spread at
-`S = 0.5` was not measured**, so the ratios in §8.1 carry real but unquantified
-uncertainty. They should not be read to three significant figures.
+run is uniformly dead. Runs that train steadily are far more stable, and for the
+winning cell this is now **measured, not expected**: the three-seed replication
+(§8.2) puts cross-seed spread at `S = 0.5`, `m = 50` at **1.1 pp** on the DP arm —
+against 29.5 pp for `S = 3.0` at the same cohort — and the non-DP control (§8) is
+*exactly* reproducible at every cohort. The §8.1 ratios at other cohorts remain
+single draws and should still not be read to three significant figures.
 
 ### 10.4 What would make this reproducible
 
@@ -668,17 +757,22 @@ exactly the 1,000 images of that class in a balanced 10,000-sample test set (§4
 ε = 6.228, growing the cohort from 5 to 200 clients turns a flat dead line into a
 learning curve (§6). But §8 shows this was overstated: some of that gain is the
 cohort, and the `N = 2m` design penalises large cohorts with thin shards. The
-combined fix — `m = 50` with `S = 0.5` — reaches **73.48 % final accuracy at
-ε = 6.228**, against a 77.16 % matched non-private ceiling (§7, §8).
+combined fix — `m = 50` with `S = 0.5` — reaches **73.4 % final accuracy at
+ε = 6.228** (mean of three seeds, range 1.1 pp), against a 76.9 % matched
+non-private ceiling (mean of the same seeds, range 2.4 pp): a DP cost of 3.5 pp
+(§7, §8.2).
 
 **7. The clipping norm was the larger error, and the earlier claim that it could
 not matter was wrong.** Reducing `S` from 3.0 to 0.5 at `m = 50` moves final
-accuracy from 10.00 % to 73.48 % at identical ε. See the retraction below.
+accuracy from 18.8 % (mean of the four recorded draws) to 73.4 % (mean of three
+seeds) at identical ε — ≈ 55 pp. See the retraction below.
 
-**8. Client-level DP costs 3–5 % of achievable accuracy here, not 88 %.**
+**8. Client-level DP costs ≈ 5 % of achievable accuracy here, not 88 %.**
 Normalised against matched no-DP ceilings, ratios at `S = 0.5` are 0.95 at
-`m = 50`, 0.95 at `m = 100` and 1.00 at `m = 200` (§8.1). The headline collapse
-measured a badly chosen configuration, not the price of privacy.
+`m = 50` and 0.95 at `m = 100`, the two cohorts where both arms are stable, and
+`m = 200` is consistent with the same value (its control was unstable; ratio
+0.88–1.00 depending on the reading — §8.1 †). The headline collapse measured a
+badly chosen configuration, not the price of privacy.
 
 **9. Once clipping binds, the clip is a step size, not an SNR lever.** Scaling the
 `S = 1.1` server step by 0.4545 recovers the entire 27-point gap to `S = 0.5` at
@@ -704,12 +798,14 @@ error, at fixed ε = 6.228:
 
 | `m` | Final acc @ `S` = 3.0 | Final acc @ `S` = 0.5 |
 |---|---|---|
-| 50 | 0.1000 | **0.7348** |
-| 100 | 0.3962 | **0.6815** |
-| 200 | 0.4651 | **0.5745** |
+| 50 | 0.188 (mean of 4 draws) | **0.7336** (mean of 3 seeds, §8.2) |
+| 100 | 0.3962 (single draw) | **0.6815** (single draw) |
+| 200 | 0.4651 (single draw) | **0.5745** (single draw) |
 
 Lowering the clip alone, changing nothing else and spending no additional privacy
-budget, was worth up to **63 accuracy points**.
+budget, was worth **≈ 55 accuracy points** at `m = 50` — computed against the mean
+of the four recorded `S = 3.0` draws rather than any one of them (§10.3 ‡), so the
+figure is stable under re-running.
 
 ### Correction to a claim in README.md
 
@@ -734,7 +830,8 @@ threshold should be replaced with that.
 **Superseded by §7–§8.** The statement above is still an improvement on the
 analytic threshold, but it was measured at `S = 3.0` — a clip that never binds at
 those cohort sizes and therefore inflates the noise for nothing. At `S = 0.5` the
-model learns at `m = 20` (52.19 %) and reaches 73.48 % at `m = 50`. And the "56 %
+model learns at `m = 20` (52.19 %) and reaches ≈ 73 % at `m = 50` (mean of three
+seeds, §8.2). And the "56 %
 at 200 clients" comparison was against the wrong baseline: the matched non-private
 ceiling at `m = 200` is 57.42 %, not 86.93 %, because those clients hold 150
 examples each. Use the normalised ratios in §8.1.
@@ -759,8 +856,9 @@ the options the evidence supports, in order of expected effect:
 the noise-to-signal ratio `z·√d/m` is independent of the clipping norm. That is
 worth knowing before anyone tries it as the obvious first fix.~~ **Retracted — see
 the retraction under Conclusions.** Lowering the clip is in fact the single
-highest-value change available, worth up to 63 accuracy points at no privacy cost.
-Item 4 above should be read as item 1.
+highest-value change available, worth ≈ 55 accuracy points at `m = 50` (against
+the four-draw mean, §10.3 ‡) at no privacy cost. Item 4 above should be read as
+item 1.
 
 ### Recommended clipping norm
 
@@ -770,7 +868,8 @@ located optimum, and at `m ≥ 50` it is not statistically separable from 1.1.**
 It wins or ties in every column of §7 and never underperforms. The support is
 uneven, and §10 is the reason to state which parts are load-bearing:
 
-- **Against `S = 3.0`: decisive.** 63.5 pp at `m = 50`, better than 2× the spread.
+- **Against `S = 3.0`: decisive.** ≈ 55 pp at `m = 50` against the four-draw mean
+  of the 3.0 side (§10.3 ‡), roughly 2× the worst-case single-run spread.
 - **Against `S = 1.1` at `m = 20`: decisive.** 39.8 pp against a 4.7 pp spread, and
   §9 independently confirms the mechanism at ~7× the spread.
 - **Against `S = 1.1` at `m ≥ 50`: not established.** Differences of 0.5–8.2 pp
@@ -812,6 +911,7 @@ python scripts/diagnose_dp.py --experiment step_size       --out docs/_step_size
 
 ```bash
 python scripts/diagnose_dp.py --experiment repeatability --out docs/_repeatability.json > r.log 2>&1
+python scripts/diagnose_dp.py --experiment replication   --out docs/_replication.json   > rp.log 2>&1
 ```
 
 Non-DP runs are exactly reproducible. **DP runs are not, and cannot be made so

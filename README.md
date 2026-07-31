@@ -177,7 +177,11 @@ accuracy:
 | `S` = 1.1 | 0.00 % | 12.38 % | 65.28 % | 64.34 % | 56.94 % |
 | **`S` = 0.5** | 11.23 % | 52.19 % | **73.48 %** | 68.15 % | 57.45 % |
 | *No-DP ceiling, same cohort* | *86.93 %* | *83.04 %* | *77.16 %* | *71.54 %* | *57.42 %* |
-| **DP / ceiling at `S` = 0.5** | 0.13 | 0.63 | **0.95** | **0.95** | **1.00** |
+| **DP / ceiling at `S` = 0.5** | 0.13 | 0.63 | **0.95** | **0.95** | 1.00 † |
+
+† The m = 200 ratio is not a clean measurement: that no-DP control was the only
+one still oscillating at round 20 (final 57.42 %, best 65.39 %), so its final
+reading is a draw, not a ceiling. Against the control's best the ratio is ≈ 0.88.
 
 > **Read the confound before reading the columns.** Holding the sampling rate at
 > q = 0.5 requires a population of `N = 2m`, so a larger cohort *necessarily* means
@@ -187,11 +191,15 @@ accuracy:
 > separates them, and it falls 29 points on its own with no DP involved.
 
 **The last row is the only one that measures the price of privacy** rather than the
-price of this experimental design. At m ≥ 50 with a correctly chosen clip,
-client-level DP at ε = 6.228 costs **3–5 % of achievable accuracy**; at m = 200 it
-costs nothing measurable, and the 57 % there is entirely the thin-shard penalty.
+price of this experimental design. The claim rests on m = 50 and m = 100, where
+both arms are stable, with m = 200 consistent with the same value: **three cohorts
+agreeing at a ratio of ≈ 0.95**. With a correctly chosen clip, client-level DP at
+ε = 6.228 costs on the order of 5 % of achievable accuracy — there is no measurable
+penalty at m = 200, though the non-private control was itself unstable at that
+cohort size.
 
-> **Every DP number above is a single run, and DP runs here are not reproducible.**
+> **Every DP number in the grid above is a single run (the m = 50 winning cell is
+> additionally replicated below), and DP runs here are not reproducible.**
 > TF Privacy draws the Gaussian noise from an unseeded initialiser executed inside
 > TFF's executor, which never sees `tf.random.set_seed`; neither library exposes a
 > seed on that path. Measured run-to-run spread is **4.7–29.5 accuracy points**
@@ -200,12 +208,16 @@ costs nothing measurable, and the 57 % there is entirely the thin-shard penalty.
 > m ≥ 50 is **within noise** and is not a ranking. The no-DP row is exactly
 > reproducible. Details and a per-claim breakdown: §10 of the diagnosis.
 
-The best configuration — m = 50, `S` = 0.5, **73.48 %** — was **still improving when
-the 20-round budget ran out**: it peaked at round 20, and mean accuracy over rounds
-11–20 (70.69 %) was well above rounds 1–10 (48.21 %). It is a lower bound, not a
-converged result. The three shipped configurations above are unchanged and were not
-re-run; the sweep is a simulation of the same aggregation code, validated against
-the recorded non-private run (86.93 %, reproduced exactly).
+The winning cell was replicated at three seeds, both arms, no seed selected:
+DP final accuracy 72.85 / 73.28 / 73.95 % (**mean 73.4 %**, range 1.1 pp) against
+its matched no-DP control at 77.16 / 77.88 / 75.53 % (**mean 76.9 %**, range
+2.4 pp) — **a DP cost of 3.5 pp, ratio 0.954**. Every DP seed was **still improving
+when the 20-round budget ran out** (final ≈ best in all three), so 73.4 % is a
+lower bound, not a converged result — unlike `S` = 3.0 at the same cohort, which
+reached 45 % mid-run and collapsed back to chance. The three shipped
+configurations above are unchanged and were not re-run; the sweep is a simulation
+of the same aggregation code, validated against the recorded non-private run
+(86.93 %, reproduced exactly).
 
 Full diagnosis — including the ablation that exonerates clipping, the ε-invariance
 gate, the fitted signal-decay exponent and a retraction of an earlier claim in that
@@ -357,15 +369,17 @@ above and contradicts no claim made above it.
 - **Client authentication and TLS**, replacing `insecure_channel` and the
   currently open registration endpoint.
 - **A re-tuned default clipping norm.** The shipped `l2_clip_norm: 3.0` sits above
-  the median update norm and buys noise for nothing; `0.5` reaches 73.48 % at
-  m = 50 against 10.00 %, at identical ε. This needs no new code — only a config
+  the median update norm and buys noise for nothing; `0.5` reaches ≈ 73 % at
+  m = 50 (mean of three seeds) against a four-draw mean of ≈ 19 % for the shipped
+  norm, at identical ε. This needs no new code — only a config
   default change and a re-run of the recorded results — and is the single
   highest-value change available. (A configuration item, not a DP item; the
   sweep that establishes it is a simulation, and the committed configs and
   `results/*.json` still reflect the un-tuned value.)
-- **Larger cohorts**, which removes the remaining DP penalty at this model size. At
-  fixed ε = 6.228 with `S` = 0.5, DP reaches 95 % of its matched non-private
-  ceiling at 50–100 clients per round and 100 % at 200. Note the ceiling itself
+- **Larger cohorts**, which shrinks the remaining DP penalty at this model size. At
+  fixed ε = 6.228 with `S` = 0.5, DP reaches ≈ 95 % of its matched non-private
+  ceiling at 50–100 clients per round, and shows no measurable penalty at 200
+  (though the non-private control was itself unstable there). Note the ceiling itself
   falls as the population grows, because this fixed 60,000-example dataset is split
   `N = 2m` ways — so raising the *absolute* number needs more data, not just more
   clients. (A scale item, not a DP item — DP itself is built; see *Results* and
