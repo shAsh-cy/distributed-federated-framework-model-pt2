@@ -21,6 +21,38 @@ can be discounted:
    with the guard removed and nothing else changed -- it calls the identical
    ``tff.aggregators.DifferentiallyPrivateFactory.gaussian_fixed``.
 
+DP RUNS ARE NOT REPRODUCIBLE, AND IT IS NOT THIS SCRIPT'S FAULT
+---------------------------------------------------------------
+Two consecutive ``simulate(dp=True, ...)`` calls with the same seed, the same
+config, in the same process, with nothing at all in between produce different
+noise. Verified by ``--experiment repeatability``, which runs each configuration
+twice and never calls ``measure_applied_noise``.
+
+The cause is in the dependency stack, not in the harness. TF Privacy's
+``GaussianSumQuery.get_noised_result`` draws noise via::
+
+    random_normal = tf.random_normal_initializer(stddev=global_state.stddev)
+
+with no ``seed`` argument (tensorflow_privacy 0.9.0,
+``privacy/dp_query/gaussian_query.py``). That initialiser *is* honoured by
+``tf.random.set_seed`` in ordinary eager code and under ``tf.function`` -- both
+checked -- but TFF serialises the aggregation to a computation proto and runs it
+in its own executor, which never sees this process's global seed. Neither
+``tff.aggregators.DifferentiallyPrivateFactory.gaussian_fixed`` nor
+``GaussianSumQuery`` exposes a seed parameter, so there is no supported way to
+make it deterministic from here.
+
+Consequences for reading the numbers in docs/dp_diagnosis.md:
+
+* Non-DP runs are exactly reproducible; ``--experiment validate`` reproduces the
+  recorded 86.93% gRPC run every time.
+* DP runs are reproducible *in configuration and in conclusion*, not bit-for-bit.
+  Treat differences of a few accuracy points between two DP runs of the same
+  config as noise, not signal. ``--experiment repeatability`` measures the spread.
+* Making DP runs deterministic would require passing a per-round seed into the
+  query -- i.e. changing the DP mechanism under test -- which is out of scope for
+  a harness whose purpose is to measure that mechanism unmodified.
+
 Usage:
     python scripts/diagnose_dp.py --experiment all --out docs/dp_diagnosis_data.json
 
@@ -303,10 +335,30 @@ def simulate(
 # ---------------------------------------------------------------------------
 
 
+_ZERO_TEMPLATE: list | None = None
+
+
+def _zero_template() -> list:
+    """Zero-filled weight template, built once so measurement touches no RNG.
+
+    ``build_model`` runs Keras initialisers, which draw from the host RNG stream.
+    Caching the shapes keeps ``measure_applied_noise`` from perturbing anything a
+    later ``simulate`` depends on.
+
+    This is hygiene, not a fix for the reproducibility problem -- see the module
+    docstring. DP runs are non-deterministic whether or not measurement happens,
+    because the noise is drawn inside TFF's executor rather than in this process.
+    """
+    global _ZERO_TEMPLATE
+    if _ZERO_TEMPLATE is None:
+        _ZERO_TEMPLATE = [np.zeros_like(w) for w in build_model("small_cnn", seed=0).get_weights()]
+    return _ZERO_TEMPLATE
+
+
 def measure_applied_noise(noise_multiplier: float, clip: float, m: int, trials: int = 3) -> dict:
     """Feed the aggregator all-zero deltas so the output is pure noise, and measure it."""
-    template = build_model("small_cnn", seed=0).get_weights()
-    zeros = [np.zeros_like(w) for w in template]
+    template = _zero_template()
+    zeros = template
 
     per_coord, vector_norms = [], []
     for _ in range(trials):
@@ -495,6 +547,61 @@ def exp_clip_sweep() -> dict:
     return {"gate": gate, "cells": cells}
 
 
+def exp_repeatability() -> dict:
+    """Run §6's exact configuration twice per cohort, with nothing in between.
+
+    Settles whether DP non-determinism comes from the diagnostic instrumentation
+    or from the stack. Same seed, same config, same process, no
+    ``measure_applied_noise`` call anywhere -- so any difference between pass A
+    and pass B cannot be attributed to measurement.
+    """
+    pairs = []
+    for m in COHORTS:
+        runs = [
+            simulate(
+                num_clients=2 * m,
+                clients_per_round=m,
+                dp=True,
+                noise_multiplier=2.0,
+                l2_clip_norm=3.0,
+                label=f"repeat/m={m}/pass{p}",
+            )
+            for p in ("A", "B")
+        ]
+        a, b = runs
+        pairs.append(
+            {
+                "clients_per_round": m,
+                "final_accuracy": [a["final_accuracy"], b["final_accuracy"]],
+                "best_accuracy": [a["best_accuracy"], b["best_accuracy"]],
+                "round1_applied_delta_norm": [
+                    a["history"][0]["applied_delta_norm"],
+                    b["history"][0]["applied_delta_norm"],
+                ],
+                "identical": a["history"][0]["applied_delta_norm"]
+                == b["history"][0]["applied_delta_norm"],
+                "runs": runs,
+            }
+        )
+        LOGGER.info(
+            "REPEAT m=%s -> final A=%.4f B=%.4f | r1 applied A=%.6f B=%.6f | identical=%s",
+            m,
+            a["final_accuracy"],
+            b["final_accuracy"],
+            a["history"][0]["applied_delta_norm"],
+            b["history"][0]["applied_delta_norm"],
+            pairs[-1]["identical"],
+        )
+    return {
+        "any_identical": any(p["identical"] for p in pairs),
+        "note": (
+            "No measure_applied_noise call occurs in this experiment. If identical is "
+            "False anywhere, the instrumentation is not the source of non-determinism."
+        ),
+        "pairs": pairs,
+    }
+
+
 def exp_cohort_baseline() -> list[dict]:
     """The same cohort grid with DP switched off, to isolate the noise term.
 
@@ -568,6 +675,7 @@ EXPERIMENTS = {
     "clip_sweep": exp_clip_sweep,
     "cohort_baseline": exp_cohort_baseline,
     "step_size": exp_step_size,
+    "repeatability": exp_repeatability,
 }
 
 
