@@ -291,9 +291,11 @@ docker compose -f docker/docker-compose.yml up --build --scale client=5
 ```
 
 That builds one image, starts a server and five client containers, and runs 5
-rounds to roughly 77 % accuracy (`configs/docker.yaml` — a non-private demo
-config, `privacy.enabled: false`). Verified end to end from a fresh clone; the
-server writes `/app/results/docker_run.json` and every container exits 0.
+rounds to roughly 77–79 % accuracy (`configs/docker.yaml` — a non-private demo
+config, `privacy.enabled: false`; the figure wobbles a couple of points because
+client registration order over real gRPC is timing-dependent). Verified end to
+end from a fresh clone twice — 77.34 % and 79.34 %; the server writes
+`/app/results/docker_run.json` and every container exits 0.
 
 Clients take no `--cid`. A client registering without an id is assigned the next
 free shard, so N replicas claim N distinct shards with no per-replica config —
