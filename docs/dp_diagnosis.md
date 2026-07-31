@@ -6,11 +6,19 @@ DP implementation broken, or is this the mechanism behaving correctly at a scale
 where it cannot work?
 
 **Verdict.** The implementation is not broken. The collapse is caused by the
-**magnitude of the Gaussian noise**, not by clipping, not by a bug in the
-aggregation, and not by a misconfigured clipping norm. At the configured cohort
-size the noise added to the aggregate is roughly **570× larger in L2 norm than
-the model's entire weight vector's useful signal**, so the first DP round
+**magnitude of the Gaussian noise**, not by clipping and not by a bug in the
+aggregation. At the configured cohort size the noise added to the aggregate is
+roughly **570× larger in L2 norm than the useful signal**, so the first DP round
 replaces the model with noise and every later round adds more.
+
+**Second verdict, from §7–§9 — the configuration was also wrong, and this document
+originally said it could not be.** At the same ε = 6.228, lowering the clipping
+norm from 3.0 to 0.5 and raising the cohort to 50 reaches **73.48 % final accuracy
+against a 77.16 % matched non-private ceiling**. Normalised against ceilings
+measured at the same cohort size, client-level DP costs **3–5 % of achievable
+accuracy, not 88 %**. The claim that lowering the clip "does not help" is
+**retracted** — see the retraction under Conclusions. It holds only where clipping
+binds, and the production setting was in the opposite regime.
 
 **No DP code was changed to produce this document.** The harness
 (`scripts/diagnose_dp.py`) imports `fl.aggregation` unchanged and drives it
@@ -22,6 +30,9 @@ directly.
 | Gaussian noise magnitude destroys the signal | **Confirmed** | §2, §3 — noise ‖·‖ = 569.7 vs signal ‖·‖ ≈ 1.0 |
 | Model degenerates to predicting one class | **Confirmed** | §4 — 84.8 % then 97.4 % of all test images given the same label |
 | Bug in the DP aggregation path | **Ruled out** | §2 — measured noise matches TFF's documented formula to 4 significant figures |
+| Clipping norm *too high*, buying noise for nothing | **Confirmed** | §7 — `S` 3.0 → 0.5 at `m` = 50 moves final accuracy 10.00 % → 73.48 % at identical ε |
+| The cohort-size result is confounded by shrinking shards | **Confirmed** | §8 — the no-DP ceiling itself falls 86.93 % → 57.42 % across the same grid |
+| Once clipping binds, the clip acts as a server step size | **Confirmed** | §9 — a 0.4545× step at `S` = 1.1 recovers the full 27-point gap to `S` = 0.5 |
 
 ---
 
@@ -232,6 +243,15 @@ Round-1 medians are quoted because they are the last measurement taken before a
 collapsing run destroys its own model; the all-rounds median is meaningless once
 clients are training on wreckage (it reaches 1.4 × 10¹⁵ at `m = 5`).
 
+> **Confound — read this before drawing a cohort-size conclusion from this table.**
+> Holding `q = 0.5` requires `N = 2m`, so a larger cohort *necessarily* means a
+> smaller shard: 6,000 examples per client at `m = 5` down to 150 at `m = 200`.
+> Accuracy therefore moves along this table for two unrelated reasons — less noise
+> (helps) and less data per client (hurts). This table cannot separate them.
+> §8 runs the identical grid with DP switched off and does separate them; the
+> conclusion below survives, but weaker than stated here, and the "4.2×" framing
+> is superseded.
+
 Per-round accuracy, showing the qualitative change:
 
 | `m` | Accuracy by round |
@@ -264,6 +284,212 @@ mean anything.
 
 ---
 
+## 7. Clipping-norm sweep at fixed ε
+
+§6 varied the cohort at one clipping norm. This varies both: `S ∈ {3.0, 1.1, 0.5}`
+crossed with `m ∈ {5, 20, 50, 100, 200}`, 15 cells.
+
+### 7.0 Gate — the clip does not move the privacy budget
+
+Checked before running anything, because the sweep is only meaningful if every
+cell carries the same ε. It does, three ways:
+
+1. `compute_epsilon(noise_multiplier, sampling_rate, rounds, delta)` has **no clip
+   parameter**. There is no path from `S` into the calculation.
+2. The composed event is
+   `SelfComposedDpEvent(PoissonSampledDpEvent(q=0.5, GaussianDpEvent(z=2.0)), count=20)`.
+   `GaussianDpEvent` carries only `z = σ/S`, already normalised by the sensitivity
+   `S = clip`. TFF sets `stddev = clip · z`, so scaling `S` scales `σ` in
+   proportion and leaves `z` — hence ε — untouched.
+3. Computed ε is **bitwise identical** at all three clips:
+   `6.2284173254307244604888182948343455791473388671875`.
+
+**ε = 6.228 at δ = 1 × 10⁻⁵ in every cell below.** The sweep is an equal-privacy
+comparison. `exp_epsilon_gate` raises `AssertionError` and aborts the sweep if this
+ever stops holding.
+
+### 7.1 The grid
+
+SNR is `min(median‖Δw‖, S) / ‖applied noise‖` — the signal that survives clipping,
+over the noise actually added. Both terms are measured, not modelled.
+
+| `S` | `m` | **Final acc** | Best acc | ‖noise‖ | Median ‖Δw‖ (r1) | Median ‖Δw‖ (all) | Clipped (r1) | Clipped (all) | **SNR** |
+|---|---|---|---|---|---|---|---|---|---|
+| 3.0 | 5 | 0.0000 | 0.0594 | 569.25 | 3.994 | *diverged* | 0.80 | 0.09 | 0.00527 |
+| 3.0 | 20 | 0.1000 | 0.1400 | 142.52 | 2.033 | 56.26 | 0.00 | 0.94 | 0.02105 |
+| 3.0 | 50 | 0.1000 | 0.4507 | 56.88 | 0.876 | 1.947 | 0.00 | 0.18 | 0.03422 |
+| 3.0 | 100 | 0.3962 | 0.5087 | 28.46 | 0.466 | 0.951 | 0.00 | 0.00 | 0.03343 |
+| 3.0 | 200 | 0.4651 | 0.5887 | 14.26 | 0.180 | 0.388 | 0.00 | 0.00 | 0.02719 |
+| 1.1 | 5 | 0.0000 | 0.1421 | 208.47 | 3.994 | *diverged* | 1.00 | 0.79 | 0.00528 |
+| 1.1 | 20 | 0.1238 | 0.2891 | 52.19 | 2.033 | 4.260 | 1.00 | 1.00 | 0.02108 |
+| 1.1 | 50 | 0.6528 | 0.6954 | 20.90 | 0.876 | 0.907 | 0.28 | 0.29 | 0.04340 |
+| 1.1 | 100 | 0.6434 | 0.6832 | 10.42 | 0.466 | 0.513 | 0.02 | 0.02 | 0.04926 |
+| 1.1 | 200 | 0.5694 | 0.5970 | 5.22 | 0.180 | 0.304 | 0.00 | 0.00 | 0.05816 |
+| 0.5 | 5 | 0.1123 | 0.1821 | 94.91 | 3.994 | *diverged* | 1.00 | 0.96 | 0.00527 |
+| 0.5 | 20 | 0.5219 | 0.5638 | 23.74 | 2.033 | 2.098 | 1.00 | 1.00 | 0.02106 |
+| **0.5** | **50** | **0.7348** | **0.7348** | 9.49 | 0.876 | 0.670 | 0.96 | 0.82 | 0.05269 |
+| 0.5 | 100 | 0.6815 | 0.6891 | 4.74 | 0.466 | 0.455 | 0.45 | 0.41 | 0.09603 |
+| 0.5 | 200 | 0.5745 | 0.6348 | 2.374 | 0.180 | 0.289 | 0.04 | 0.09 | 0.12177 |
+
+Measured noise matches the closed form `S·z·√d / m` to 3–4 significant figures in
+all 15 cells.
+
+**All three `m = 5` runs diverge to NaN.** The applied noise (95–569) dwarfs the
+weight scale, the weights explode, and `0.0000` is a NaN model rather than a
+prediction. Their all-rounds medians are not real measurements and are marked
+*diverged* rather than tabulated. `m = 5` is excluded from every conclusion below.
+
+### 7.2 Two regimes, and the boundary moves
+
+Where clipping binds (`S < ‖Δw‖`), signal and noise both scale with `S`, so SNR
+reduces to `m / (z·√d)` — independent of the clip. That is confirmed to three
+digits across a 6× change in `S`:
+
+| `m` | SNR @ 3.0 | SNR @ 1.1 | SNR @ 0.5 | `m / (z·√d)` |
+|---|---|---|---|---|
+| 5 | 0.00527 | 0.00528 | 0.00527 | 0.005271 |
+| 20 | 0.02105 | 0.02108 | 0.02106 | 0.021081 |
+
+Where the clip is slack (`S > ‖Δw‖`), the signal is untouched and only the noise
+scales with `S`, so SNR = `‖Δw‖·m / (S·z·√d)` and **falls as the clip rises**.
+
+The boundary between the regimes is not fixed, because the update norm shrinks as
+shards shrink. At `m = 200` the median update is 0.289, so even `S = 0.5` is
+slack (9% clipped) and SNR is still climbing when the sweep runs out of values —
+**the sweep does not bracket the optimum at large `m`**.
+
+### 7.3 Fitted exponent for the signal decay
+
+Round-1 median pre-clip norms are identical across all three clips — 3.994,
+2.033, 0.876, 0.466, 0.180 at `m` = 5, 20, 50, 100, 200 — because round 1 starts
+from the same seeded initialisation before any clip or noise applies. That makes
+them a clip-independent measurement of how the update norm scales.
+
+Least squares on `ln g = ln A − k·ln m`:
+
+| Quantity | Value |
+|---|---|
+| **k** | **0.828 ± 0.095** (std err) |
+| A | 19.06 |
+| **R²** | **0.962** |
+| RMSE (log space) | 0.211 |
+| Residuals (log) | −0.230, +0.242, +0.160, +0.101, −0.273 |
+
+Noise falls as `1/m`, so net **SNR ∝ m^(1−k) = m^0.172**.
+
+Fit quality is good but not exact: the residual signs run −, +, +, +, − , which is
+systematic curvature, so a single power law is a description rather than a law.
+
+**What `k` actually measures — and why the extrapolation from it is worthless.**
+Because the sweep holds `q = 0.5` by setting `N = 2m`, each client's shard is
+`60,000 / 2m`. So `k ≈ 0.83` is very nearly "update norm scales with shard size",
+not a property of cohort size at all. Taken at face value, `SNR ∝ m^0.172`
+extrapolates to ~735,000 clients for SNR = 0.5 at `S = 0.5` — a meaningless
+number, since 60,000 examples cannot be split among 1.47 million clients. The
+exponent is reported because it was asked for and because it quantifies the
+confound; it is not a basis for a client-count estimate. §8 gives the answer that is.
+
+---
+
+## 8. No-DP control at every cohort size — separating noise from thin shards
+
+The identical grid with `noise_multiplier = 0` and clipping disabled. Same `N = 2m`,
+same seed, same partitioning, same round count. This is the ceiling each cell of
+§7 was actually competing against.
+
+| `m` | `N` | Shard | **Final acc** | Best acc |
+|---|---|---|---|---|
+| 5 | 10 | 6,000 | **0.8693** | 0.8758 |
+| 20 | 40 | 1,500 | **0.8304** | 0.8304 |
+| 50 | 100 | 600 | **0.7716** | 0.7716 |
+| 100 | 200 | 300 | **0.7154** | 0.7183 |
+| 200 | 400 | 150 | **0.5742** | 0.6539 |
+
+`m = 5` reproduces the recorded non-private gRPC run (86.93%) exactly, which
+validates the in-process simulation against the real transport.
+
+**The ceiling falls by 29 points from `m = 5` to `m = 200` with no DP involved at
+all.** That is the confound, measured: growing the cohort in this design costs
+more accuracy than the noise does past `m ≈ 100`.
+
+### 8.1 Normalised — the price of DP alone
+
+DP accuracy over its matched ceiling, at the winning clip `S = 0.5`, final accuracy
+throughout:
+
+| `m` | DP final | No-DP ceiling | **Ratio** | Gap |
+|---|---|---|---|---|
+| 5 | 0.1123 | 0.8693 | **0.129** | 75.7 pp |
+| 20 | 0.5219 | 0.8304 | **0.628** | 30.8 pp |
+| 50 | 0.7348 | 0.7716 | **0.952** | 3.7 pp |
+| 100 | 0.6815 | 0.7154 | **0.953** | 3.4 pp |
+| 200 | 0.5745 | 0.5742 | **1.001** | −0.0 pp |
+
+The same ratio at every clip, which is where the clipping norm's real effect shows:
+
+| `m` | No-DP | Ratio @ 3.0 | Ratio @ 1.1 | Ratio @ 0.5 |
+|---|---|---|---|---|
+| 5 | 0.8693 | 0.000 | 0.000 | 0.129 |
+| 20 | 0.8304 | 0.120 | 0.149 | 0.628 |
+| 50 | 0.7716 | 0.130 | 0.846 | **0.952** |
+| 100 | 0.7154 | 0.554 | 0.899 | **0.953** |
+| 200 | 0.5742 | 0.810 | 0.992 | **1.001** |
+
+**This is the only number that speaks to DP's price rather than the experimental
+design's.** At `m ≥ 50` with a correctly chosen clip, client-level DP at ε = 6.228
+costs **3–5% of achievable accuracy** — and at `m = 200` it costs nothing
+measurable (ratio 1.001; the noise is fully averaged away and the 57.4% figure is
+entirely the thin-shard penalty).
+
+The headline collapse was never the price of privacy. It was the price of running
+DP at `m = 5` with a clipping norm 3× above the median update.
+
+**How many clients would you need?** Properly posed, the question separates. The
+DP penalty is already negligible by `m = 50` (ratio 0.95) and gone by `m = 200`.
+What limits accuracy past that point is data per client, not cohort size — this
+population is 60,000 examples no matter how it is divided. With shard size held
+fixed instead (each new client bringing its own data), noise falls as `1/m` while
+`g` stays put, so SNR grows as `m¹` and the DP penalty closes faster still. The
+honest answer is **on the order of 50–200 clients per round for the noise to stop
+mattering at ε ≈ 6** — not the thousands implied by any SNR = 1 criterion.
+
+---
+
+## 9. Is the clipping norm acting as a server step size?
+
+§7.2 leaves one cell unexplained. At `m = 20`, `S = 1.1` and `S = 0.5` both clip
+100% of updates, so their SNR is identical (0.02108 vs 0.02106) — yet `S = 0.5`
+scores **27 points higher**. Identical privacy, identical SNR, very different
+accuracy. SNR cannot be the whole story.
+
+Hypothesis: SNR is scale-invariant but the *step* is not. The server applies the
+aggregate delta with no server-side learning rate, so when clipping binds the
+per-round step magnitude is proportional to `S`. At `S = 1.1` the model moves 2.2×
+further per round than at `S = 0.5` — same signal-to-noise ratio, larger absolute
+excursion through weight space.
+
+Test: scale the `S = 1.1` server step by `0.5/1.1 = 0.4545`, matching the `S = 0.5`
+step magnitude while leaving ε, `z` and SNR untouched. All three arms in one
+process, so they share RNG state and are directly comparable.
+
+| Clip | Server LR | ε | SNR | **Final acc** | Best acc |
+|---|---|---|---|---|---|
+| 1.1 | 1.0 | 6.228 | 0.0211 | 0.2726 | 0.3160 |
+| 1.1 | **0.4545** | 6.228 | 0.0211 | **0.5934** | 0.5934 |
+| 0.5 | 1.0 | 6.228 | 0.0211 | 0.5169 | 0.5890 |
+
+**Confirmed.** Scaling the step recovers the entire gap — 0.2726 → 0.5934, matching
+and slightly exceeding the `S = 0.5` arm at 0.5169. The `m = 20` cell is no longer
+an anomaly: **once clipping binds, lowering the clip is a server learning-rate
+reduction, not an SNR improvement.** It is SNR-neutral and stability-positive,
+which is also why `S = 0.5` was the only `m = 5` configuration still finite at
+round 20.
+
+`server_lr` exists only in `scripts/diagnose_dp.py` and defaults to 1.0; `fl/` is
+unchanged and the production server still applies the aggregate delta as-is.
+
+---
+
 ## Conclusions
 
 **1. The DP implementation is correct.** Measured noise matches TFF's documented
@@ -288,9 +514,52 @@ exactly the 1,000 images of that class in a balanced 10,000-sample test set (§4
 `m = 5`.** The noise sweep (§5) shows the only usable setting, `z = 0.1`, carries
 ε = 1060 — vacuous. Every ε below ~50 has already destroyed the model.
 
-**6. The fix is cohort size, and it is demonstrated, not asserted.** At an
-identical ε = 6.228, growing the cohort from 5 to 200 clients takes best accuracy
-from 13.2 % to 55.8 % and turns a flat dead line into a learning curve (§6).
+**6. The fix is cohort size *and* clipping norm together.** At an identical
+ε = 6.228, growing the cohort from 5 to 200 clients turns a flat dead line into a
+learning curve (§6). But §8 shows this was overstated: some of that gain is the
+cohort, and the `N = 2m` design penalises large cohorts with thin shards. The
+combined fix — `m = 50` with `S = 0.5` — reaches **73.48 % final accuracy at
+ε = 6.228**, against a 77.16 % matched non-private ceiling (§7, §8).
+
+**7. The clipping norm was the larger error, and the earlier claim that it could
+not matter was wrong.** Reducing `S` from 3.0 to 0.5 at `m = 50` moves final
+accuracy from 10.00 % to 73.48 % at identical ε. See the retraction below.
+
+**8. Client-level DP costs 3–5 % of achievable accuracy here, not 88 %.**
+Normalised against matched no-DP ceilings, ratios at `S = 0.5` are 0.95 at
+`m = 50`, 0.95 at `m = 100` and 1.00 at `m = 200` (§8.1). The headline collapse
+measured a badly chosen configuration, not the price of privacy.
+
+**9. Once clipping binds, the clip is a step size, not an SNR lever.** Scaling the
+`S = 1.1` server step by 0.4545 recovers the entire 27-point gap to `S = 0.5` at
+identical ε and identical SNR (§9).
+
+### Retraction — "lowering `l2_clip_norm` alone does not help"
+
+The previous version of this document closed with:
+
+> Note that lowering `l2_clip_norm` alone does **not** help: `stddev = clip · z`,
+> so the noise-to-signal ratio `z·√d/m` is independent of the clipping norm.
+
+**That is wrong, and it was the most consequential error in the diagnosis.** The
+algebra holds only in the regime it silently assumed — where clipping *binds*.
+When the clip is slack, the signal is unchanged and only the noise scales with
+`S`, so SNR = `‖Δw‖·m / (S·z·√d)` and lowering the clip is a direct, unqualified
+improvement.
+
+The production setting was in the slack regime and the document said so two
+sections earlier — §1 records the clip at 3.0 against a median update norm of
+0.984 — so the conclusion contradicted its own evidence. Measured cost of the
+error, at fixed ε = 6.228:
+
+| `m` | Final acc @ `S` = 3.0 | Final acc @ `S` = 0.5 |
+|---|---|---|
+| 50 | 0.1000 | **0.7348** |
+| 100 | 0.3962 | **0.6815** |
+| 200 | 0.4651 | **0.5745** |
+
+Lowering the clip alone, changing nothing else and spending no additional privacy
+budget, was worth up to **63 accuracy points**.
 
 ### Correction to a claim in README.md
 
@@ -312,6 +581,14 @@ order of 100+ clients per round before it learns at all, and 200 clients still
 reach only ~56 % against an 86.9 % non-private baseline.** The README's analytic
 threshold should be replaced with that.
 
+**Superseded by §7–§8.** The statement above is still an improvement on the
+analytic threshold, but it was measured at `S = 3.0` — a clip that never binds at
+those cohort sizes and therefore inflates the noise for nothing. At `S = 0.5` the
+model learns at `m = 20` (52.19 %) and reaches 73.48 % at `m = 50`. And the "56 %
+at 200 clients" comparison was against the wrong baseline: the matched non-private
+ceiling at `m = 200` is 57.42 %, not 86.93 %, because those clients hold 150
+examples each. Use the normalised ratios in §8.1.
+
 ### What would fix it — not applied, per instruction
 
 No parameter was adjusted to improve any number in this document. For the record,
@@ -328,9 +605,33 @@ the options the evidence supports, in order of expected effect:
 4. **Re-derive `l2_clip_norm` from the corrected measurement.** The current 3.0 was
    set from round-1 norms; the across-training median is 0.984.
 
-Note that lowering `l2_clip_norm` alone does **not** help: `stddev = clip · z`, so
+~~Note that lowering `l2_clip_norm` alone does **not** help: `stddev = clip · z`, so
 the noise-to-signal ratio `z·√d/m` is independent of the clipping norm. That is
-worth knowing before anyone tries it as the obvious first fix.
+worth knowing before anyone tries it as the obvious first fix.~~ **Retracted — see
+the retraction under Conclusions.** Lowering the clip is in fact the single
+highest-value change available, worth up to 63 accuracy points at no privacy cost.
+Item 4 above should be read as item 1.
+
+### Recommended clipping norm
+
+**`l2_clip_norm = 0.5`, with the caveat that it is the best value tested rather
+than a located optimum.** It wins or ties in every column of §7 and never
+underperforms: at `m ≥ 50` it is best outright, and at `m ≤ 20`, where clipping
+binds and SNR is fixed at `m/(z·√d)` regardless, it is still best because a smaller
+clip is a smaller step and the runs stay numerically alive (§9) — `S = 0.5` was the
+only `m = 5` configuration not fully NaN by round 20. The theoretical justification
+is that the clip should sit near the typical update norm: the across-training
+median is 0.984 at `m = 5` but falls to 0.670, 0.455 and 0.289 at `m = 50`, 100 and
+200, so 0.5 sits sensibly inside that range, whereas the current 3.0 is slack
+everywhere past `m = 20` and buys pure noise. The honest caveat is that the sweep
+bottoms out at 0.5 and SNR is still rising there at `m = 100` and `m = 200`
+(clipped fraction only 0.41 and 0.09), so the optimum is probably below 0.5 and
+this sweep does not bracket it. There must be a turning point — once clipping
+binds, step size ∝ `S`, so `S → 0` means no learning within a fixed round budget —
+but it was not found. Adaptive clipping
+(`DifferentiallyPrivateFactory.gaussian_adaptive`) tracks a quantile of the update
+norms and would locate it per-round without a sweep; that is the better long-term
+answer than any fixed constant.
 
 ---
 
@@ -342,7 +643,18 @@ python scripts/diagnose_dp.py --experiment validate     --out docs/_validate.jso
 python scripts/diagnose_dp.py --experiment ablation     --out docs/_ablation.json     > a.log  2>&1
 python scripts/diagnose_dp.py --experiment noise_sweep  --out docs/_noise_sweep.json  > n.log  2>&1
 python scripts/diagnose_dp.py --experiment cohort_sweep --out docs/_cohort_sweep.json > c.log  2>&1
+python scripts/diagnose_dp.py --experiment epsilon_gate    --out docs/_epsilon_gate.json    > g.log  2>&1
+python scripts/diagnose_dp.py --experiment clip_sweep      --out docs/_clip_sweep.json      > cs.log 2>&1
+python scripts/diagnose_dp.py --experiment cohort_baseline --out docs/_cohort_baseline.json > cb.log 2>&1
+python scripts/diagnose_dp.py --experiment step_size       --out docs/_step_size.json       > ss.log 2>&1
 ```
+
+DP runs are reproducible in configuration but not bit-identical: `clip_sweep` calls
+`measure_applied_noise` before each cell, which consumes TF RNG state, so its
+`S = 3.0` column differs from §6 by a few points despite the same seed and config.
+Run-to-run spread on these runs is a few accuracy points — §9's within-process
+controls (0.2726 and 0.5169) sit that far from their §7 counterparts (0.2891 and
+0.5219) while reproducing the 24-point gap between them.
 
 Raw per-round data for every run in this document is committed alongside it as
 `docs/_*.json`. Do not pipe the script's stdout into `grep`/`tail`: TFF leaves a
