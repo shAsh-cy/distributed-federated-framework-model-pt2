@@ -150,6 +150,7 @@ def simulate(
     local_epochs: int = 1,
     record_norms: bool = True,
     record_predictions: bool = False,
+    server_lr: float = 1.0,
     label: str = "",
 ) -> dict:
     """Run one federated experiment in-process and return everything measured."""
@@ -202,6 +203,14 @@ def simulate(
         previous = global_weights
         try:
             global_weights = aggregator.aggregate(updates, global_weights)
+            if server_lr != 1.0:
+                # Diagnostic-only knob, absent from fl/: the production server
+                # applies the aggregate delta as-is (server_lr == 1.0). Used to
+                # test whether the clip acts as a step size when clipping binds.
+                global_weights = add(
+                    previous,
+                    [server_lr * d for d in subtract(global_weights, previous)],
+                )
             aggregated = True
         except Exception as exc:  # noqa: BLE001 - recorded, not swallowed
             LOGGER.warning("round %d: aggregation failed: %s", rnd, exc)
@@ -216,6 +225,12 @@ def simulate(
         else:
             loss, acc = float("nan"), 0.0
 
+        # Fraction of this round's updates whose norm exceeded the clipping
+        # threshold, i.e. the updates clipping actually touched.
+        clipped_fraction = (
+            float(np.mean([n > l2_clip_norm for n in pre_clip_norms])) if pre_clip_norms else None
+        )
+
         history.append(
             {
                 "round": rnd,
@@ -225,6 +240,7 @@ def simulate(
                 "median_pre_clip_norm": float(np.median(pre_clip_norms))
                 if pre_clip_norms
                 else None,
+                "clipped_fraction": clipped_fraction,
                 "applied_delta_norm": float(applied),
                 "global_weight_norm": float(l2_norm(global_weights)) if finite else None,
                 "aggregated": aggregated,
@@ -248,6 +264,7 @@ def simulate(
         "dp": dp,
         "noise_multiplier": noise_multiplier,
         "l2_clip_norm": l2_clip_norm,
+        "server_lr": server_lr,
         "sampling_rate": clients_per_round / num_clients,
         "epsilon": compute_epsilon(noise_multiplier, clients_per_round / num_clients, rounds)
         if dp and noise_multiplier > 0
@@ -259,6 +276,19 @@ def simulate(
         "seconds": round(time.monotonic() - started, 1),
         "history": history,
     }
+
+    # Summary statistics over pre-clip update norms. Round 1 is reported
+    # separately because once a run has destroyed its own model the clients are
+    # training on wreckage and their norms say nothing about healthy training.
+    r1 = history[0]["pre_clip_norms"]
+    finite_norms = [n for h in history for n in h["pre_clip_norms"] if math.isfinite(n)]
+    result["round1_median_pre_clip_norm"] = float(np.median(r1)) if r1 else None
+    result["round1_clipped_fraction"] = history[0]["clipped_fraction"]
+    result["median_pre_clip_norm_all_rounds"] = (
+        float(np.median(finite_norms)) if finite_norms else None
+    )
+    clipped = [h["clipped_fraction"] for h in history if h["clipped_fraction"] is not None]
+    result["clipped_fraction_all_rounds"] = float(np.mean(clipped)) if clipped else None
 
     if record_predictions and all(np.all(np.isfinite(w)) for w in global_weights):
         evaluator.set_weights(global_weights)
@@ -387,12 +417,157 @@ def exp_cohort_sweep() -> list[dict]:
     return out
 
 
+CLIP_VALUES = (3.0, 1.1, 0.5)
+COHORTS = (5, 20, 50, 100, 200)
+
+
+def exp_epsilon_gate() -> dict:
+    """Prove epsilon does not depend on the clipping norm before sweeping it.
+
+    ``compute_epsilon`` takes no clip argument, and the underlying
+    ``GaussianDpEvent`` is parameterised by the noise *multiplier* z = sigma/S,
+    which is already normalised by the sensitivity S. Scaling S scales sigma
+    proportionally, so z -- and therefore epsilon -- is unchanged.
+
+    If this ever returns unequal values the clip sweep is not an
+    equal-privacy comparison and must not be run.
+    """
+    values = {
+        clip: compute_epsilon(
+            noise_multiplier=2.0, sampling_rate=0.5, rounds=DEFAULT_ROUNDS, delta=1e-5
+        )
+        for clip in CLIP_VALUES
+    }
+    identical = len(set(values.values())) == 1
+    if not identical:
+        raise AssertionError(f"epsilon varies with clip: {values}")
+    return {
+        "clip_values": list(CLIP_VALUES),
+        "epsilon_per_clip": {str(k): repr(v) for k, v in values.items()},
+        "all_identical": identical,
+        "epsilon": next(iter(values.values())),
+        "delta": 1e-5,
+        "noise_multiplier": 2.0,
+        "sampling_rate": 0.5,
+        "rounds": DEFAULT_ROUNDS,
+        "reason": (
+            "compute_epsilon has no clip parameter; GaussianDpEvent is parameterised by "
+            "z = sigma/S, already normalised by sensitivity S = clip"
+        ),
+    }
+
+
+def exp_clip_sweep() -> dict:
+    """clip x cohort grid at fixed epsilon.
+
+    z = 2.0, q = 0.5 and rounds = 20 are held constant, so every cell carries the
+    same epsilon = 6.228 at delta = 1e-5 (asserted by exp_epsilon_gate). N = 2m
+    keeps q fixed, which also keeps total samples trained per round at ~30,000.
+    """
+    gate = exp_epsilon_gate()
+    cells = []
+    for clip in CLIP_VALUES:
+        for m in COHORTS:
+            noise = measure_applied_noise(2.0, clip, m, trials=2)
+            run = simulate(
+                num_clients=2 * m,
+                clients_per_round=m,
+                dp=True,
+                noise_multiplier=2.0,
+                l2_clip_norm=clip,
+                record_predictions=True,
+                label=f"clip={clip}/m={m}",
+            )
+            run["measured_noise_norm"] = noise["measured_noise_vector_norm"]
+            run["predicted_noise_norm"] = noise["predicted_noise_vector_norm"]
+            cells.append(run)
+            LOGGER.info(
+                "CELL clip=%s m=%s -> final=%.4f best=%.4f noise=%.3f "
+                "r1_median_dw=%.3f r1_clipped=%.2f",
+                clip,
+                m,
+                run["final_accuracy"],
+                run["best_accuracy"],
+                run["measured_noise_norm"],
+                run["round1_median_pre_clip_norm"],
+                run["round1_clipped_fraction"],
+            )
+    return {"gate": gate, "cells": cells}
+
+
+def exp_cohort_baseline() -> list[dict]:
+    """The same cohort grid with DP switched off, to isolate the noise term.
+
+    ``exp_clip_sweep`` sets N = 2m to hold q = 0.5, so a larger cohort also means
+    a *smaller* shard per client (60,000 / 2m examples). Accuracy therefore moves
+    with m for two unrelated reasons: less noise (helps) and less data per client
+    (hurts). Without this control the two are inseparable and any "how many
+    clients would you need" extrapolation is unattributable.
+    """
+    out = []
+    for m in COHORTS:
+        out.append(
+            simulate(
+                num_clients=2 * m,
+                clients_per_round=m,
+                dp=False,
+                label=f"baseline/m={m}",
+            )
+        )
+        LOGGER.info(
+            "BASELINE m=%s -> final=%.4f best=%.4f r1_median_dw=%.3f",
+            m,
+            out[-1]["final_accuracy"],
+            out[-1]["best_accuracy"],
+            out[-1]["round1_median_pre_clip_norm"],
+        )
+    return out
+
+
+def exp_step_size() -> list[dict]:
+    """Test whether the clip acts as a step size once clipping binds.
+
+    At m=20 both clip=1.1 and clip=0.5 clip 100% of updates, so SNR is identical
+    (0.0211 either way, = m/(z*sqrt(d))), yet clip=0.5 scores ~27 points higher.
+    If that gap is a step-size effect, then scaling the clip=1.1 server step by
+    0.5/1.1 = 0.4545 -- which matches the clip=0.5 step magnitude while leaving
+    SNR and epsilon untouched -- should recover most of the gap.
+
+    Confirms or refutes; it does not tune. server_lr exists only in this file.
+    """
+    out = []
+    for lr, clip in ((1.0, 1.1), (0.5 / 1.1, 1.1), (1.0, 0.5)):
+        out.append(
+            simulate(
+                num_clients=40,
+                clients_per_round=20,
+                dp=True,
+                noise_multiplier=2.0,
+                l2_clip_norm=clip,
+                server_lr=lr,
+                label=f"step-size/clip={clip}/server_lr={lr:.4f}",
+            )
+        )
+        LOGGER.info(
+            "STEPSIZE clip=%s server_lr=%.4f -> final=%.4f best=%.4f",
+            clip,
+            lr,
+            out[-1]["final_accuracy"],
+            out[-1]["best_accuracy"],
+        )
+    return out
+
+
 EXPERIMENTS = {
     "validate": exp_validate,
     "noise_model": exp_noise_model,
     "ablation": exp_ablation,
     "noise_sweep": exp_noise_sweep,
     "cohort_sweep": exp_cohort_sweep,
+    "epsilon_gate": exp_epsilon_gate,
+    "clip_sweep": exp_clip_sweep,
+    "cohort_baseline": exp_cohort_baseline,
+    "step_size": exp_step_size,
 }
 
 
