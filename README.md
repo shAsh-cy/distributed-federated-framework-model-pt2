@@ -133,11 +133,15 @@ Fashion-MNIST · 10 clients · Dirichlet non-IID (α = 0.5) · C = 0.5 (5 client
 sampled per round) · 20 rounds · seed 42 · 225,034-parameter CNN. The three
 configurations differ **only** in their privacy block.
 
-| Configuration | Noise `z` | Clip `S` | δ | **ε (computed)** | **Test accuracy** |
+| Configuration | Noise `z` | Clip `S` | δ | **ε (computed)** | **Final accuracy** (round 20) |
 |---|---|---|---|---|---|
 | No DP | — | — | — | — (no guarantee) | **86.93 %** |
 | Moderate noise | 2.0 | 3.0 | 1 × 10⁻⁵ | **6.228** | **10.00 %** |
 | High noise | 6.0 | 3.0 | 1 × 10⁻⁵ | **1.639** | **10.00 %** |
+
+Accuracy is reported at round 20 throughout this README. The DP rows use a
+clipping norm now known to be badly chosen — see below; they are the numbers this
+repo's committed configs actually produce, not the best available at that ε.
 
 Untrained baseline: **12.25 %**. Without DP the model peaks at 87.69 % and ends
 at 86.93 %. Every run moved 90,025,400 bytes server→client — exactly 20 rounds ×
@@ -148,39 +152,55 @@ update carries. Reproduce with `./scripts/run_all_experiments.sh`.
 ε is computed from the noise multiplier, the client sampling rate (q = 0.5) and
 the round count — it is never chosen. See `fl.aggregation.compute_epsilon`.
 
-### Why both DP runs collapse to chance
+### Why the shipped DP configuration collapses to chance
 
-This is the honest result at this scale, and it is arithmetic rather than a bug.
-DP adds noise of expected L2 norm `z·S·√d / m` to a signal whose norm is at most
-`S`, so the noise-to-signal ratio is
+Two independent causes, both measured.
 
-```
-z · √d / m          (independent of the clipping norm S)
-```
+**The cohort is too small.** DP adds noise of expected L2 norm `z·S·√d / m`. With
+d = 225,034 parameters (√d ≈ 474) and m = 5 clients per round, that noise has norm
+569 against a typical update of ≈ 1.0. Measured: 569.7 observed versus 569.3
+predicted. The first DP round replaces the model with noise.
 
-With d = 225,034 parameters (√d ≈ 474) and m = 5 clients per round that is **190×**
-at z = 2 and **569×** at z = 6. Measured directly against a unit-signal input:
-569.9 observed versus 569.3 predicted. The update is essentially all noise, the
-model diverges within two rounds, and accuracy falls to the 10 % of guessing.
+**The clipping norm is 3× too high.** `S = 3.0` sits *above* the median update norm
+(0.984), so it almost never binds — it buys noise (`stddev = S·z`) for no
+sensitivity reduction. Lowering it costs nothing in privacy: ε is computed from
+`z = σ/S`, which is already normalised by `S`, so ε is **bitwise identical** at
+every clipping norm.
 
-At `m = 5` no noise multiplier yields both a meaningful ε and a working model. A
-sweep over `z` confirms it: `z = 0.1` still trains (70.1 %) but carries ε = 1060,
-while the lowest ε in the sweep — 16.6 at `z = 1.0` — has already destroyed the
-model.
+Both fixes together, at the **same ε = 6.228**, measured in-process over a
+15-cell sweep (`S ∈ {3.0, 1.1, 0.5}` × `m ∈ {5, 20, 50, 100, 200}`) — final
+accuracy:
 
-**Cohort size is the fix, and it is measured rather than argued.** Holding ε fixed
-at 6.228 and growing only the number of clients averaged per round:
-
-| Clients per round | 5 | 20 | 50 | 100 | 200 |
+| Final accuracy | m = 5 | m = 20 | m = 50 | m = 100 | m = 200 |
 |---|---|---|---|---|---|
-| Best accuracy | 13.2 % | 16.5 % | 38.7 % | 50.7 % | **55.8 %** |
+| `S` = 3.0 (shipped) | 0.00 % | 10.00 % | 10.00 % | 39.62 % | 46.51 % |
+| `S` = 1.1 | 0.00 % | 12.38 % | 65.28 % | 64.34 % | 56.94 % |
+| **`S` = 0.5** | 11.23 % | 52.19 % | **73.48 %** | 68.15 % | 57.45 % |
+| *No-DP ceiling, same cohort* | *86.93 %* | *83.04 %* | *77.16 %* | *71.54 %* | *57.42 %* |
+| **DP / ceiling at `S` = 0.5** | 0.13 | 0.63 | **0.95** | **0.95** | **1.00** |
 
-Same privacy guarantee at every column — a 4.2× accuracy gain from averaging more
-clients. Useful learning begins around 100 clients per round; 200 still reaches
-only ~56 % against the 86.9 % non-private baseline.
+> **Read the confound before reading the columns.** Holding the sampling rate at
+> q = 0.5 requires a population of `N = 2m`, so a larger cohort *necessarily* means
+> a smaller shard — 6,000 examples per client at m = 5 down to 150 at m = 200.
+> Accuracy moves across these columns for two unrelated reasons: less noise (helps)
+> and less data per client (hurts). The **no-DP ceiling row is the control** that
+> separates them, and it falls 29 points on its own with no DP involved.
 
-Full diagnosis, including the ablation that exonerates clipping and the
-predicted-class collapse, is in **[docs/dp_diagnosis.md](docs/dp_diagnosis.md)**.
+**The last row is the only one that measures the price of privacy** rather than the
+price of this experimental design. At m ≥ 50 with a correctly chosen clip,
+client-level DP at ε = 6.228 costs **3–5 % of achievable accuracy**; at m = 200 it
+costs nothing measurable, and the 57 % there is entirely the thin-shard penalty.
+
+The best configuration — m = 50, `S` = 0.5, **73.48 %** — was **still improving when
+the 20-round budget ran out**: it peaked at round 20, and mean accuracy over rounds
+11–20 (70.69 %) was well above rounds 1–10 (48.21 %). It is a lower bound, not a
+converged result. The three shipped configurations above are unchanged and were not
+re-run; the sweep is a simulation of the same aggregation code, validated against
+the recorded non-private run (86.93 %, reproduced exactly).
+
+Full diagnosis — including the ablation that exonerates clipping, the ε-invariance
+gate, the fitted signal-decay exponent and a retraction of an earlier claim in that
+document — is in **[docs/dp_diagnosis.md](docs/dp_diagnosis.md)**.
 
 ---
 
@@ -321,14 +341,25 @@ above and contradicts no claim made above it.
   update-poisoning detection, to give the system an actual threat model.
 - **Client authentication and TLS**, replacing `insecure_channel` and the
   currently open registration endpoint.
-- **Larger cohorts**, the only change measured to make the *already-implemented*
-  client-level DP useful at this model size. At fixed ε = 6.228, best accuracy
-  rises from 13.2 % at 5 clients per round to 55.8 % at 200; useful learning
-  begins around 100. Closing the remaining gap to 86.9 % needs a larger simulated
-  population, a smaller model, or both. (A scale item, not a DP item — DP itself
-  is built; see *Results* and [docs/dp_diagnosis.md](docs/dp_diagnosis.md).)
+- **A re-tuned default clipping norm.** The shipped `l2_clip_norm: 3.0` sits above
+  the median update norm and buys noise for nothing; `0.5` reaches 73.48 % at
+  m = 50 against 10.00 %, at identical ε. This needs no new code — only a config
+  default change and a re-run of the recorded results — and is the single
+  highest-value change available. (A configuration item, not a DP item; the
+  sweep that establishes it is a simulation, and the committed configs and
+  `results/*.json` still reflect the un-tuned value.)
+- **Larger cohorts**, which removes the remaining DP penalty at this model size. At
+  fixed ε = 6.228 with `S` = 0.5, DP reaches 95 % of its matched non-private
+  ceiling at 50–100 clients per round and 100 % at 200. Note the ceiling itself
+  falls as the population grows, because this fixed 60,000-example dataset is split
+  `N = 2m` ways — so raising the *absolute* number needs more data, not just more
+  clients. (A scale item, not a DP item — DP itself is built; see *Results* and
+  [docs/dp_diagnosis.md](docs/dp_diagnosis.md).)
 - **Adaptive clipping** (quantile-based, as TFF's adaptive factory supports) in
-  place of the fixed clipping norm currently set from measured update norms.
+  place of any fixed clipping norm. The measured optimum moves with cohort size —
+  the median update norm falls from 0.984 at m = 5 to 0.289 at m = 200 — so no
+  single constant is right across configurations, and the sweep above does not
+  bracket the optimum at large cohorts.
 - **Genuine multi-host deployment**, replacing single-host containers, to
   exercise real network latency, partitions and heterogeneous clients.
 - **Persistent server state**, so a restart resumes at the current model version
