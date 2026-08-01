@@ -1,0 +1,62 @@
+# Mixed-framework pool: 1 server, 3 TensorFlow clients, 2 PyTorch clients.
+#
+#   docker compose -f docker/docker-compose.mixed.yml up --build
+#
+# Same image, same config, same server as the single-framework compose file --
+# the ONLY difference between the two client services is the --framework flag,
+# which is a client-local property. The server cannot tell them apart: framework
+# is logged at registration for observability and nothing branches on it. The
+# wire format (fl/proto/fl_comm.proto, canonical tensor layout) is the whole
+# contract.
+#
+# configs/docker.yaml declares num_clients: 5 = 3 + 2.
+
+services:
+  server:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    command: >
+      python -m fl.server
+      --config configs/docker.yaml
+      --metrics-out /app/results/docker_mixed_run.json
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket;s=socket.create_connection(('127.0.0.1',8080),2);s.close()"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+
+  client-tf:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    command: >
+      python -m fl.client
+      --config configs/docker.yaml
+      --server server:8080
+      --framework tensorflow
+    depends_on:
+      server:
+        condition: service_healthy
+    deploy:
+      replicas: 3
+    restart: on-failure
+
+  client-torch:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    command: >
+      python -m fl.client
+      --config configs/docker.yaml
+      --server server:8080
+      --framework torch
+    depends_on:
+      server:
+        condition: service_healthy
+    deploy:
+      replicas: 2
+    restart: on-failure
