@@ -278,6 +278,40 @@ Full diagnosis — including the ablation that exonerates clipping, the ε-invar
 gate, the fitted signal-decay exponent and a retraction of an earlier claim in that
 document — is in **[docs/dp_diagnosis.md](docs/dp_diagnosis.md)**.
 
+### FEMNIST: the controlled version of the cohort experiment
+
+Everything above ran on a synthetic partition where growing the cohort also
+thinned every shard — the tables say so where it bites. The follow-up removes
+that confound with a **real fixed client population**: LEAF-derived federated
+EMNIST (62 classes, partitioned by writer — each client *is* one of 1,000 real
+writers, shard sizes 30/159/392 min/median/max, measurably non-uniform labels:
+mean per-writer entropy 3.38 nats vs pooled 3.66). Same round budget, same
+optimiser, model within 3 % of the Fashion one (231,742 parameters). Dataset
+swaps by config alone (`configs/femnist.yaml`).
+
+Measured there, all figures means over 3 seeds:
+
+- **Pooled centralised baseline** (no federation): **85.6 %** (range 0.7 pp) —
+  the true upper bound, which the repo previously lacked.
+- **Decoupled cohort sweep** at fixed N = 1,000 and fixed ε = 6.228 (z
+  re-calibrated per cell as q = m/N rises, since amplification by subsampling
+  weakens): m ∈ {5 … 500} — a 100× cohort range with the applied noise falling
+  22.7× — final accuracy **flat at 5–8 %** in every cell, ranges overlapping.
+- **Federated no-DP control**, same population and budget: **statistically
+  identical to the DP cells** (m = 50: 0.075 no-DP vs 0.076 DP). Plain FedAvg
+  is equally stuck: 20 rounds × 1 local epoch over ~159-example shards is
+  optimiser-limited on 62 classes before noise enters.
+
+**What this changes about the story above:** the Fashion-MNIST cohort curve
+was a shard-size story, not a cohort-size story. With shards genuinely fixed
+and the privacy budget honestly re-calibrated, cohort size alone moved
+nothing at this operating point — and the fitted exponent k = 0.828 is
+retired (update norms are flat in m once shards stop shrinking; k was
+measuring shard size). Scope honestly stated: this is measured at the
+Fashion-matched budget; a cohort benefit could still emerge at operating
+points where FedAvg itself progresses. Full write-up:
+**[docs/femnist_cohort.md](docs/femnist_cohort.md)**.
+
 ---
 
 ## Quickstart
@@ -344,19 +378,34 @@ chance at this cohort size, which is the finding; the exact figure is a draw.
 gRPC stubs are generated on import from `fl/proto/fl_comm.proto`, so there is no
 separate build step and the `.proto` stays the single source of truth.
 
+### FEMNIST
+
+```bash
+python scripts/prepare_femnist.py     # one-time: ~170 MB download -> ~78 MB cache in data/
+python scripts/femnist_experiments.py --experiment sweep --out docs/_femnist_sweep.json > sweep.log 2>&1
+```
+
+The first command caches the LEAF-derived federated EMNIST locally (`data/` is
+gitignored); the second reproduces the decoupled cohort sweep. See
+[docs/femnist_cohort.md](docs/femnist_cohort.md) for all experiments and the
+same no-EOF-pipe warning that applies to every TFF-touching script here.
+
 ### Tests
 
 ```bash
 pytest --cov=fl --cov-report=term-missing
 ```
 
-**208 tests, 89 % statement coverage**, run on every push by GitHub Actions
-alongside `ruff check` and `ruff format --check`. Four areas, one file each:
-`tests/test_rpc.py` (transport, bit-identical weight round-trip, oversized and
-malformed payloads), `tests/test_aggregation.py` (FedAvg arithmetic and
-degenerate cohorts), `tests/test_sync.py` (staleness, the round barrier,
-concurrent registration), `tests/test_faults.py` (disconnects, timeouts, NaN
-updates, server restart).
+**240 tests, 89 % statement coverage**, run on every push by GitHub Actions
+alongside `ruff check` and `ruff format --check`. Four core areas, one file
+each: `tests/test_rpc.py` (transport, bit-identical weight round-trip,
+oversized and malformed payloads), `tests/test_aggregation.py` (FedAvg
+arithmetic, degenerate cohorts, ε calibration), `tests/test_sync.py`
+(staleness, the round barrier, concurrent registration), `tests/test_faults.py`
+(disconnects, timeouts, NaN updates, server restart) — plus data, model,
+config and FEMNIST loader suites (`tests/test_femnist.py`'s real-data
+invariant checks skip on machines that have not prepared the ~78 MB cache;
+CI does not download it).
 
 The central aggregation test uses shard sizes 10, 100 and 1000 holding values 1,
 2 and 3, so the weighted average is 3210/1110 = 2.8919 while an unweighted mean
@@ -417,10 +466,26 @@ Stated plainly, because each of these is a real boundary of what was built.
   mean or Krum), no client reputation, and no authentication: any process that can
   reach the port can register and contribute.
 
+- **The FEMNIST results are harness results, and their scope is one operating
+  point.** The dataset swaps by config alone and the gRPC path accepts
+  `configs/femnist.yaml`, but the recorded FEMNIST numbers come from the
+  in-process harness (`scripts/femnist_experiments.py`) — nobody has started
+  1,000 client containers on one host. And the decoupled sweep measures the
+  Fashion-matched budget (20 rounds, 1 local epoch), where FedAvg itself is
+  optimiser-limited; it rules out a cohort effect *there*, not everywhere.
+
+- **The FEMNIST source data carries a small upstream quirk**, found while
+  testing and pinned rather than hidden: 0.84 % of test images are
+  byte-identical to a train image after uint8 quantisation (minimal-ink
+  glyphs; the train split internally holds 2,732 byte-duplicates, so it is
+  LEAF/TFF preprocessing, not this repo's packing — which adds none). A test
+  bounds the rate below 1 % so a packing regression fails loudly.
+
 Also true, and smaller: channels are `insecure_channel` with no TLS; server state
 is in memory and does not survive a restart (clients re-register and reclaim their
-shards, but the model version resets to 0); only `fashion_mnist` and `small_cnn`
-are accepted by config validation.
+shards, but the model version resets to 0); config validation accepts exactly two
+dataset/model pairs (`fashion_mnist`/`small_cnn`, `femnist`/`femnist_cnn`) and
+rejects mismatched combinations.
 
 ---
 
@@ -443,14 +508,15 @@ above and contradicts no claim made above it.
   highest-value change available. (A configuration item, not a DP item; the
   sweep that establishes it is a simulation, and the committed configs and
   `results/*.json` still reflect the un-tuned value.)
-- **Larger cohorts**, which shrinks the remaining DP penalty at this model size. At
-  fixed ε = 6.228 with `S` = 0.5, DP reaches ≈ 95 % of its matched non-private
-  ceiling at 50–100 clients per round, and shows no measurable penalty at 200
-  (though the non-private control was itself unstable there). Note the ceiling itself
-  falls as the population grows, because this fixed 60,000-example dataset is split
-  `N = 2m` ways — so raising the *absolute* number needs more data, not just more
-  clients. (A scale item, not a DP item — DP itself is built; see *Results* and
-  [docs/dp_diagnosis.md](docs/dp_diagnosis.md).)
+- **A training budget at which the FEMNIST population actually learns.** The
+  decoupled experiment's honest finding is that 20 rounds × 1 local epoch is
+  optimiser-limited on the 62-class writer population — no-DP FedAvg and DP
+  FedAvg are equally stuck at 5–8 % against an 85.6 % centralised ceiling.
+  More rounds, more local epochs, and/or a larger learning rate would move
+  the operating point to where the amplification-vs-averaging tension can
+  express itself in accuracy at all; only then is the cohort question (or any
+  DP-cost figure on FEMNIST) worth re-asking. On the Fashion-MNIST side, the
+  N = 2m tables remain as recorded, read with their stated confound.
 - **Adaptive clipping** (quantile-based, as TFF's adaptive factory supports) in
   place of any fixed clipping norm. The update norm a clip should track falls
   with cohort size — median 0.984 at m = 5 down to 0.289 at m = 200 — so no

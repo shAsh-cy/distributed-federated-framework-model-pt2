@@ -402,7 +402,16 @@ slack (9% clipped) and SNR is still climbing when the sweep runs out of values �
 > difference" rather than as a ranking. SNR and noise columns are unaffected —
 > those are measurements of the noise distribution, not of a training outcome.
 
-### 7.3 Fitted exponent for the signal decay
+### 7.3 Fitted exponent for the signal decay — retired; kept as a footnote
+
+> **Retired (2026-07-31).** The FEMNIST decoupled sweep
+> ([femnist_cohort.md](femnist_cohort.md)) re-ran the cohort question with a
+> real fixed population, where shard size does not move with m. There the
+> median update norm is flat in m (0.16–0.19 across a 25× cohort range) —
+> **k ≈ 0 once the confound is removed**. The k = 0.828 below was measuring
+> shard size, not cohort size, exactly as the caveat under the fit suspected.
+> It remains here only as a quantification of this design's q = 0.5 / N = 2m
+> confound and must not be used for any client-count estimate.
 
 Round-1 median pre-clip norms are identical across all three clips — 3.994,
 2.033, 0.876, 0.466, 0.180 at `m` = 5, 20, 50, 100, 200 — because round 1 starts
