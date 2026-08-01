@@ -316,3 +316,47 @@ def test_fedavg_aggregator_matches_weighted_average():
         weighted_average(updates)[0],
         rtol=0,
     )
+
+
+# -- noise calibration -------------------------------------------------------
+
+
+class TestCalibrateNoiseMultiplier:
+    def test_round_trips_the_recorded_moderate_setting(self):
+        """z=2.0 at q=0.5, 20 rounds, delta=1e-5 is the recorded eps=6.228 run.
+
+        Calibrating back from that epsilon must recover z ~= 2.0 -- a
+        hand-checkable anchor tying the inverse to a known (z, eps) pair.
+        """
+        from fl.aggregation import calibrate_noise_multiplier, compute_epsilon
+
+        target = compute_epsilon(2.0, 0.5, 20, 1e-5)
+        z = calibrate_noise_multiplier(target, 0.5, 20, 1e-5)
+        assert abs(z - 2.0) < 0.01
+        # And the mechanism it names really achieves the budget it was asked for.
+        assert abs(compute_epsilon(z, 0.5, 20, 1e-5) - target) <= 1e-4 * target
+
+    def test_lower_sampling_rate_needs_less_noise_at_same_budget(self):
+        """Privacy amplification: q=0.01 should need far smaller z than q=0.5."""
+        from fl.aggregation import calibrate_noise_multiplier
+
+        z_small_q = calibrate_noise_multiplier(6.228, 0.01, 20, 1e-5)
+        z_big_q = calibrate_noise_multiplier(6.228, 0.5, 20, 1e-5)
+        assert z_small_q < z_big_q
+
+    def test_tighter_budget_needs_more_noise(self):
+        from fl.aggregation import calibrate_noise_multiplier
+
+        assert calibrate_noise_multiplier(1.0, 0.5, 20) > calibrate_noise_multiplier(6.0, 0.5, 20)
+
+    def test_unreachable_target_raises(self):
+        from fl.aggregation import calibrate_noise_multiplier
+
+        with pytest.raises(ValueError, match="outside the reachable range"):
+            calibrate_noise_multiplier(1e12, 0.5, 20)
+
+    def test_nonpositive_target_rejected(self):
+        from fl.aggregation import calibrate_noise_multiplier
+
+        with pytest.raises(ValueError, match="must be > 0"):
+            calibrate_noise_multiplier(0.0, 0.5, 20)

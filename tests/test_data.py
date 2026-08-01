@@ -284,3 +284,65 @@ def test_partition_summary_reports_per_client_label_counts(fashion):
     for row, shard in zip(summary, shards, strict=False):
         assert sum(row["label_counts"]) == shard.size
         assert row["num_classes_present"] == sum(1 for c in row["label_counts"] if c > 0)
+
+
+# -- unified loading entry ---------------------------------------------------
+
+
+def test_load_federated_fashion_matches_direct_calls(fashion):
+    from fl.config import DataConfig
+    from fl.data import load_federated
+
+    train_direct, _ = fashion
+    cfg = DataConfig(dataset="fashion_mnist", num_clients=7, partition="dirichlet")
+    train, test, shards = load_federated(cfg, seed=42)
+    assert len(train) == len(train_direct)
+    assert len(shards) == 7
+    direct = partition(train.y, 7, scheme="dirichlet", alpha=0.5, seed=42)
+    for a, b in zip(shards, direct, strict=True):
+        assert np.array_equal(a, b)
+    # The test split is separate and untouched by the partitioner.
+    assert len(test) > 0
+    assert sum(s.size for s in shards) == len(train)
+
+
+def test_load_federated_rejects_unknown_dataset():
+    from dataclasses import dataclass
+
+    from fl.data import load_federated
+
+    @dataclass
+    class Fake:
+        dataset: str = "cifar_zzz"
+        num_clients: int = 2
+        partition: str = "iid"
+        dirichlet_alpha: float = 0.5
+
+    with pytest.raises(ValueError, match="unknown dataset"):
+        load_federated(Fake(), seed=0)
+
+
+def test_dataset_num_classes():
+    from fl.data import dataset_num_classes
+
+    assert dataset_num_classes("fashion_mnist") == 10
+    with pytest.raises(ValueError, match="unknown dataset"):
+        dataset_num_classes("nope")
+
+
+def test_label_entropy():
+    from fl.data import label_entropy
+
+    assert label_entropy(np.array([0, 0, 0])) == 0.0  # empty shard
+    assert label_entropy(np.array([5, 0, 0])) == 0.0  # single class
+    uniform = label_entropy(np.array([10, 10, 10, 10]))
+    assert abs(uniform - np.log(4)) < 1e-12  # uniform = log K
+    skewed = label_entropy(np.array([97, 1, 1, 1]))
+    assert 0.0 < skewed < uniform  # skew strictly between
+
+
+def test_label_distribution_honours_num_classes():
+    labels = np.array([0, 1, 2, 5])
+    shard = np.arange(4)
+    assert label_distribution(labels, shard, num_classes=62).shape == (62,)
+    assert label_distribution(labels, shard, num_classes=62).sum() == 4

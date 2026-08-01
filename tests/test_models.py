@@ -89,3 +89,49 @@ def test_build_model_dispatches_by_name():
 def test_build_model_rejects_unknown_name():
     with pytest.raises(ValueError, match="unknown model"):
         build_model("resnet50")
+
+
+# -- femnist_cnn -------------------------------------------------------------
+
+
+def test_femnist_parameter_count_is_exactly_as_documented():
+    from fl.models import FEMNIST_CNN_PARAMS, build_femnist_cnn
+
+    model = build_femnist_cnn(seed=0)
+    assert count_parameters(model) == FEMNIST_CNN_PARAMS == 231_742
+
+
+def test_femnist_parameter_count_matches_hand_computed_layer_breakdown():
+    from fl.models import FEMNIST_CNN_PARAMS
+
+    conv1 = (3 * 3 * 1) * 32 + 32
+    conv2 = (3 * 3 * 32) * 64 + 64
+    dense1 = 1600 * 128 + 128
+    logits = 128 * 62 + 62
+    assert conv1 + conv2 + dense1 + logits == FEMNIST_CNN_PARAMS
+
+
+def test_femnist_output_is_logits_over_62_classes():
+    from fl.models import build_femnist_cnn
+
+    model = build_femnist_cnn(seed=0)
+    out = model(np.zeros((2, 28, 28, 1), dtype=np.float32))
+    assert out.shape == (2, 62)
+
+
+def test_femnist_shares_backbone_with_small_cnn():
+    """All layers except the logits layer have identical shapes across the two."""
+    from fl.models import build_femnist_cnn, build_small_cnn
+
+    small = build_small_cnn(seed=0).get_weights()
+    fem = build_femnist_cnn(seed=0).get_weights()
+    assert len(small) == len(fem)
+    for a, b in zip(small[:-2], fem[:-2], strict=True):
+        assert a.shape == b.shape
+    assert fem[-2].shape == (128, 62) and fem[-1].shape == (62,)
+
+
+def test_build_model_registry_knows_femnist():
+    from fl.models import build_model
+
+    assert build_model("femnist_cnn", seed=1).output_shape == (None, 62)

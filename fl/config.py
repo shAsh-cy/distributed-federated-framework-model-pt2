@@ -27,9 +27,14 @@ import yaml
 
 PartitionScheme = str
 
-VALID_PARTITIONS: tuple[str, ...] = ("iid", "dirichlet")
-VALID_DATASETS: tuple[str, ...] = ("fashion_mnist",)
-VALID_MODELS: tuple[str, ...] = ("small_cnn",)
+VALID_PARTITIONS: tuple[str, ...] = ("iid", "dirichlet", "natural")
+VALID_DATASETS: tuple[str, ...] = ("fashion_mnist", "femnist")
+VALID_MODELS: tuple[str, ...] = ("small_cnn", "femnist_cnn")
+
+#: The one model whose logits width matches each dataset's class count. A
+#: 62-class model scoring 10-class data (or vice versa) fails loudly here
+#: instead of silently training a mostly-dead logits layer.
+DATASET_MODEL: dict[str, str] = {"fashion_mnist": "small_cnn", "femnist": "femnist_cnn"}
 
 
 class ConfigError(ValueError):
@@ -43,7 +48,15 @@ def _require(condition: bool, message: str) -> None:
 
 @dataclass(frozen=True)
 class DataConfig:
-    """Dataset selection and how the training set is split across clients."""
+    """Dataset selection and how the training set is split across clients.
+
+    For ``femnist`` the split is not synthesised: each client is one real
+    writer from the LEAF-derived federated EMNIST, so ``partition`` must be
+    ``"natural"`` and ``num_clients`` selects how many writers form the
+    population (a seeded subsample of the 3,400 available; 3,400 selects all).
+    For ``fashion_mnist`` the partition is synthetic, so ``"natural"`` is
+    rejected — there are no real client boundaries to use.
+    """
 
     dataset: str = "fashion_mnist"
     num_clients: int = 10
@@ -64,6 +77,20 @@ class DataConfig:
             self.dirichlet_alpha > 0.0,
             f"data.dirichlet_alpha must be > 0, got {self.dirichlet_alpha}",
         )
+        if self.dataset == "femnist":
+            _require(
+                self.partition == "natural",
+                "data.dataset 'femnist' is partitioned by writer; set data.partition to "
+                f"'natural' (got {self.partition!r}). Synthesising a split over naturally "
+                "partitioned data would destroy the property the dataset exists to provide.",
+            )
+        else:
+            _require(
+                self.partition != "natural",
+                f"data.partition 'natural' requires a dataset with real client boundaries "
+                f"(femnist); {self.dataset!r} is a pooled dataset that must be split "
+                "synthetically ('iid' or 'dirichlet')",
+            )
 
 
 @dataclass(frozen=True)
@@ -217,6 +244,12 @@ class Config:
 
     def _validate_cross_field(self) -> None:
         """Constraints that no single section can check on its own."""
+        _require(
+            DATASET_MODEL[self.data.dataset] == self.model.name,
+            f"model.name {self.model.name!r} does not match data.dataset "
+            f"{self.data.dataset!r}; expected {DATASET_MODEL[self.data.dataset]!r} "
+            "(the logits width must equal the dataset's class count)",
+        )
         _require(
             self.server.min_clients_per_round <= self.data.num_clients,
             f"server.min_clients_per_round ({self.server.min_clients_per_round}) exceeds "

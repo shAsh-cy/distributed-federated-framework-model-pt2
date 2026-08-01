@@ -38,7 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from fl.client import FederatedClient  # noqa: E402
 from fl.config import Config  # noqa: E402
-from fl.data import load_fashion_mnist, partition, partition_summary  # noqa: E402
+from fl.data import dataset_num_classes, load_federated, partition_summary  # noqa: E402
 from fl.models import build_model, count_parameters  # noqa: E402
 from fl.server import FederatedServer, build_evaluator  # noqa: E402
 
@@ -68,15 +68,8 @@ def run(config: Config, port: int | None = None) -> dict:
 
     seed_everything(config.seed)
 
-    train, test = load_fashion_mnist()
-    shards = partition(
-        train.y,
-        num_clients=config.data.num_clients,
-        scheme=config.data.partition,
-        alpha=config.data.dirichlet_alpha,
-        seed=config.seed,
-    )
-    summary = partition_summary(train.y, shards)
+    train, test, shards = load_federated(config.data, seed=config.seed)
+    summary = partition_summary(train.y, shards, dataset_num_classes(config.data.dataset))
     LOGGER.info(
         "partition (%s): shard sizes %s",
         config.data.partition,

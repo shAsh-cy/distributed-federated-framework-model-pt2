@@ -33,15 +33,23 @@ import tensorflow as tf
 
 INPUT_SHAPE: tuple[int, int, int] = (28, 28, 1)
 NUM_CLASSES: int = 10
+FEMNIST_CLASSES: int = 62
 
 #: Exact trainable parameter count of :func:`build_small_cnn`.
 SMALL_CNN_PARAMS: int = 225_034
 
+#: Exact trainable parameter count of :func:`build_femnist_cnn`. Identical
+#: backbone to ``small_cnn``; only the logits layer widens (128*62 + 62 = 7,998
+#: parameters instead of 1,290), so 225,034 - 1,290 + 7,998 = 231,742.
+FEMNIST_CNN_PARAMS: int = 231_742
 
-def build_small_cnn(seed: int | None = None) -> tf.keras.Model:
-    """Build the Fashion-MNIST CNN.
+
+def _build_cnn(num_classes: int, name: str, seed: int | None = None) -> tf.keras.Model:
+    """Shared 28x28 CNN backbone with a configurable logits width.
 
     Args:
+        num_classes: Output dimension of the logits layer.
+        name: Keras model name (also the config-facing registry key).
         seed: If given, every weight initialiser is seeded from it, so two calls
             with the same seed produce bit-identical initial weights. The server
             relies on this to construct the initial global model deterministically.
@@ -69,17 +77,33 @@ def build_small_cnn(seed: int | None = None) -> tf.keras.Model:
             tf.keras.layers.MaxPooling2D(2, name="pool2"),
             tf.keras.layers.Flatten(name="flatten"),
             tf.keras.layers.Dense(128, activation="relu", kernel_initializer=init(), name="dense1"),
-            tf.keras.layers.Dense(NUM_CLASSES, kernel_initializer=init(), name="logits"),
+            tf.keras.layers.Dense(num_classes, kernel_initializer=init(), name="logits"),
         ],
-        name="small_cnn",
+        name=name,
     )
 
 
-_BUILDERS = {"small_cnn": build_small_cnn}
+def build_small_cnn(seed: int | None = None) -> tf.keras.Model:
+    """Build the Fashion-MNIST CNN (10 classes)."""
+    return _build_cnn(NUM_CLASSES, "small_cnn", seed)
+
+
+def build_femnist_cnn(seed: int | None = None) -> tf.keras.Model:
+    """Build the FEMNIST CNN (62 classes: 10 digits, 26+26 letters).
+
+    Deliberately the same backbone as ``small_cnn`` rather than the much larger
+    LEAF reference CNN (~6.6M parameters): DP noise scales with sqrt(d), CPU
+    round time scales with d, and keeping d within 3% of the Fashion-MNIST model
+    makes noise magnitudes directly comparable across the two datasets.
+    """
+    return _build_cnn(FEMNIST_CLASSES, "femnist_cnn", seed)
+
+
+_BUILDERS = {"small_cnn": build_small_cnn, "femnist_cnn": build_femnist_cnn}
 
 
 def build_model(name: str = "small_cnn", seed: int | None = None) -> tf.keras.Model:
-    """Build a model by config name."""
+    """Build a model by config name (``small_cnn`` or ``femnist_cnn``)."""
     try:
         builder = _BUILDERS[name]
     except KeyError:
