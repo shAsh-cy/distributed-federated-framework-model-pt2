@@ -45,3 +45,19 @@ jax==0.4.14
 jaxlib==0.4.14
 keras==2.14.0
 typing-extensions==4.5.0
+
+# --- Coordinator API (HTTP/WebSocket observability surface) ---
+# The pydantic-v1 generation of the web stack, and not by preference:
+# tensorflow-federated pins typing-extensions==4.5.*, pydantic v2 requires
+# >=4.6, so fastapi must stay <0.100 (the last pydantic-v1 line). sqlalchemy
+# is capped at 1.4.20 because google-vizier (a TFF dependency) declares
+# sqlalchemy<=1.4.20; 2.x installs and appears to work, but the API shares a
+# process with the live TFF DP aggregation path and an undeclared-conflict
+# stack is not worth the risk. Verified empirically in the built image,
+# including TFF DP aggregation running beside sqlalchemy's ORM.
+fastapi==0.99.1
+pydantic==1.10.13
+sqlalchemy==1.4.20
+alembic==1.12.1
+uvicorn==0.23.2
+httpx==0.24.1

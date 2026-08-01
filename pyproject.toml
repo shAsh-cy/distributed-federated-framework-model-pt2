@@ -43,3 +43,7 @@ exclude = ["*_pb2.py", "*_pb2_grpc.py", "AUDIT.md"]
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "C4"]
 ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# Depends() in argument defaults is FastAPI's dependency-injection idiom.
+"coordinator/app.py" = ["B008"]

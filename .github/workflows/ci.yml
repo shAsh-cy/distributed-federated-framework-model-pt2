@@ -70,7 +70,7 @@ jobs:
         env:
           TF_CPP_MIN_LOG_LEVEL: "2"
         run: |
-          pytest --cov=fl --cov-report=term-missing --cov-report=xml --junitxml=junit.xml
+          pytest --cov=fl --cov=coordinator --cov-report=term-missing --cov-report=xml --junitxml=junit.xml
 
       - name: Upload coverage report
         if: always()
