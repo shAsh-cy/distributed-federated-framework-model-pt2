@@ -94,7 +94,7 @@ class FakeClient:
         self.accepted_rounds: list[int] = []
         self.rejections: list[int] = []
 
-    def register(self, desired: str = "", protocol_version=PB.PROTOCOL_VERSION_V1):
+    def register(self, desired: str = "", protocol_version=PB.PROTOCOL_VERSION_V2):
         response = self.stub.Register(
             PB.RegisterRequest(protocol_version=protocol_version, desired_client_id=desired)
         )

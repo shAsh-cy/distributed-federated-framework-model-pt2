@@ -164,17 +164,17 @@ class FederatedServer(fl_comm_pb2_grpc.FederatedLearningServicer):
     # -- gRPC surface -------------------------------------------------------
 
     def Register(self, request, context):  # noqa: N802  (gRPC naming)
-        if request.protocol_version != _PB.PROTOCOL_VERSION_V1:
+        if request.protocol_version != _PB.PROTOCOL_VERSION_V2:
             LOGGER.warning(
                 "rejecting client with protocol_version=%s (server speaks %s)",
                 request.protocol_version,
-                _PB.PROTOCOL_VERSION_V1,
+                _PB.PROTOCOL_VERSION_V2,
             )
             return _PB.RegisterResponse(
                 accepted=False,
                 rejection_reason=(
                     f"protocol version mismatch: client sent {request.protocol_version}, "
-                    f"server speaks {_PB.PROTOCOL_VERSION_V1}"
+                    f"server speaks {_PB.PROTOCOL_VERSION_V2}"
                 ),
             )
 

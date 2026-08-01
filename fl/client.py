@@ -70,7 +70,7 @@ class FederatedClient:
         """Register with the server and claim a shard."""
         response = self.stub.Register(
             _PB.RegisterRequest(
-                protocol_version=_PB.PROTOCOL_VERSION_V1,
+                protocol_version=_PB.PROTOCOL_VERSION_V2,
                 desired_client_id=self.desired_client_id,
             )
         )
