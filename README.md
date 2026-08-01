@@ -220,6 +220,60 @@ exactly that — and round-trips are bit-exact while forward passes agree to
 
 ---
 
+## Coordinator API: observing and controlling runs from a browser
+
+**Protocol chosen by purpose, not accident: gRPC + protobuf is the internal
+client-to-aggregator protocol; HTTP + WebSocket + JSON is the external
+observability and control surface.** Training clients move binary weights
+under deadlines and staleness rules — that stays on gRPC. Browsers and
+tooling observe, start, stop and replay — that is `coordinator/`, a FastAPI
+service beside the aggregator. Neither surface leaks into the other:
+training clients never speak HTTP, and the API never carries model weights.
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /runs` | start a run from a config payload (validated synchronously; bad config → 422) |
+| `GET /runs`, `GET /runs/{id}` | history and detail, live and imported |
+| `POST /runs/{id}/stop` | graceful cancellation — between rounds: clean stop; mid-round: current fit finishes, remaining cohort dropped with `reason=stopped`, the partial round is **not** aggregated |
+| `GET /datasets` `/algorithms` `/architectures` | capabilities from the fl registries, so the frontend hardcodes nothing |
+| `WS /runs/{id}/events?since=N` | the event stream, replayable |
+
+**The replay guarantee.** Every event carries a schema version and a
+contiguous per-run sequence number assigned at persistence; events are
+persisted *before* they are broadcast. Full run state is reconstructible from
+the stream alone — `run_started` carries the config and the per-client label
+histograms (the dashboard renders data heterogeneity per node and cannot
+compute it client-side), `round_aggregated` carries accuracy, loss, bytes
+each way, cumulative ε, median update norm and clipped fraction. A client
+reconnects with `?since=<last seq + 1>` and misses nothing; a consumer that
+falls behind a bounded queue is evicted and recovers the same way. Runs and
+events persist to SQLite (SQLAlchemy + Alembic), so history survives
+restarts. The API never blocks on training: each run is a thread pushing
+events; the API is a consumer.
+
+**History on first launch.** `coordinator.importer.import_history` loads the
+repo's committed result files — 97 runs on the current tree, 82 with genuine
+per-round event streams. Runs with recorded histories replay as events;
+summary-only records import as completed runs with final metrics; nothing
+fabricates client-level events the files never recorded; multi-seed cells
+keep per-seed runs plus a summary row that preserves mean *and range*. All
+imported rows are marked `imported`.
+
+The OpenAPI schema is committed at [docs/openapi.json](docs/openapi.json)
+(the frontend generates its client from it; a test fails if it drifts from
+the app). The web stack is pinned to the pydantic-v1 generation — fastapi
+0.99.1, sqlalchemy 1.4.20 — because TFF pins `typing-extensions==4.5.*` and
+google-vizier caps sqlalchemy; see requirements.txt for the full reasoning.
+
+Run it locally:
+
+```bash
+uvicorn --factory coordinator.app:create_app --port 8000
+python scripts/export_openapi.py        # regenerate the committed schema
+```
+
+---
+
 ## Results
 
 Fashion-MNIST · 10 clients · Dirichlet non-IID (α = 0.5) · C = 0.5 (5 clients
@@ -487,7 +541,7 @@ same no-EOF-pipe warning that applies to every TFF-touching script here.
 pytest --cov=fl --cov-report=term-missing
 ```
 
-**269 tests, 89 % statement coverage**, run on every push by GitHub Actions
+**307 tests, 92 % statement coverage (fl/ + coordinator/)**, run on every push by GitHub Actions
 alongside `ruff check` and `ruff format --check`. Four core areas, one file
 each: `tests/test_rpc.py` (transport, bit-identical weight round-trip,
 oversized and malformed payloads), `tests/test_aggregation.py` (FedAvg
