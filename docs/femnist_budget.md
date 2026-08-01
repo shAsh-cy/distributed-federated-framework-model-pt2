@@ -66,15 +66,54 @@ not at FedProx.
 
 ## 4. The cohort axis, re-asked at a budget where FedAvg trains
 
-<!-- RESULTS:M_AT_BUDGET -->
+Cohort sweep at the working budget (E = 10, 20 rounds, no DP), fixed
+1,000-writer population, three seeds per cell; m = 200 is the E = 10 cell
+from §2, identical configuration:
 
-## 5. What was NOT run
+| m | Mean final | Range | Per-seed | s/round |
+|---|---|---|---|---|
+| 5 | 0.6731 | 0.0288 | 0.680 / 0.655 / 0.684 | 4.6 |
+| 50 | 0.7191 | 0.0021 | 0.720 / 0.718 / 0.720 | 34.7 |
+| 200 | 0.7279 | 0.0021 | 0.727 / 0.728 / 0.730 | 133.6 |
+| 500 | **0.7280** | 0.0042 | 0.728 / 0.726 / 0.730 | 330.2 |
+
+**The cohort axis moves things when FedAvg actually trains — modestly, and
+it saturates.** With shard size genuinely constant, growing the cohort
+5 → 50 buys +4.6 pp, 50 → 200 buys +0.9 pp, and 200 → 500 buys **+0.01 pp**
+— nothing, at 2.5× the compute per round. All gains clear the seed ranges
+except the last, which is far inside them. The mechanism this is consistent
+with is variance reduction of the averaged update: strongest when few
+clients are averaged, exhausted quickly, and worth little once the average
+is already stable.
+
+Two readings this table forecloses: "more clients per round fixes federated
+learning" (the whole axis is worth 5.5 pp against a 12.8 pp gap to the
+pooled baseline), and the earlier stall-era conclusion that the cohort axis
+does nothing (that was the optimiser floor, not a property of the axis).
+The remaining gap to the 85.6 % pooled baseline at m = 500 is not a cohort
+problem; on this evidence it is a budget/heterogeneity problem — the §3
+curves speak to how much more rounds buy.
+
+## 5. What was NOT run, and one warning for the DP reintroduction
 
 R = 200 at E = 10 costs ≈ 8.9 h per seed (≈ 27 h for three) and was not run;
 the R = 100 curves in §3 are the basis for judging whether longer training
 would change any conclusion. DP is deliberately absent from every run in this
 document — reintroducing it belongs after the cohort question has an answer
 at a working budget, not before.
+
+**The clip regime changed under the new budget, and one earlier conclusion
+must be re-scoped before anyone leans on it.** At E = 10 the median update
+norm is ≈ 1.9–2.6 — an order of magnitude above the E = 1 updates the
+FEMNIST clip bracket was run at. Against the S = 0.5 clip used there, the
+sweep logs show `clipped=1.00`: **every** update would bind. That is the
+binding regime the Fashion-MNIST analysis identified, where the clipping
+norm stops being a sensitivity bound and functions as a server learning
+rate. The earlier finding that "there is no clip optimum to locate"
+([femnist_cohort.md](femnist_cohort.md) §5) was measured at the 7 % stall,
+where nothing could move — it is a statement about the stalled regime only,
+and must not be carried forward to this budget. When DP is reintroduced at
+E = 10, the clip must be re-bracketed from scratch.
 
 ## Reproducing
 
