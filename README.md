@@ -274,6 +274,33 @@ python scripts/export_openapi.py        # regenerate the committed schema
 
 ---
 
+## Dashboard
+
+`dashboard/` is the browser face of the coordinator API: React + Vite +
+TypeScript strict, styled as laboratory instrumentation rather than an
+analytics product. The signature element is the **live client topology** —
+clients ring the aggregator, each node carrying its local label histogram,
+and the per-round animation encodes the actual protocol (sampling,
+wall-clock-proportional training pulses, byte-weighted update edges,
+aggregation, outward propagation, deadline drops that stay dimmed a round).
+The Dirichlet-alpha preview in run configuration reshapes per-client label
+distributions live before any compute is spent.
+
+Honesty is structural: imported runs are marked, multi-seed aggregates render
+as mean-with-range bands (the band is the true min..max of recorded seeds),
+and a run that recorded only final metrics never gets an interpolated curve.
+The typed client is generated from the committed `docs/openapi.json`; run
+state is reconstructed exclusively by replaying the event stream.
+
+```bash
+cd dashboard && npm install
+npm run dev            # against a running coordinator API on :8000
+VITE_MOCK=1 npm run dev  # zero-backend mock mode on recorded fixtures
+npm test && npm run e2e  # vitest + Playwright (mock mode, no training)
+```
+
+---
+
 ## Results
 
 Fashion-MNIST · 10 clients · Dirichlet non-IID (α = 0.5) · C = 0.5 (5 clients
