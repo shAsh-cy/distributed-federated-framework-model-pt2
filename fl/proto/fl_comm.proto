@@ -103,6 +103,12 @@ message RegisterRequest {
   // Optional stable identity so a restarted client can reclaim its own shard
   // instead of being handed a fresh one.
   string desired_client_id = 2;
+  // Self-reported local training framework (e.g. "tensorflow", "torch").
+  // OBSERVABILITY ONLY: the server logs it at registration and must never
+  // branch on it. The wire format above is the whole interoperability
+  // contract; a server that treats frameworks differently has broken the
+  // design this field exists to help verify.
+  string framework = 3;
 }
 
 message RegisterResponse {

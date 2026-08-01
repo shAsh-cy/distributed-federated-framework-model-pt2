@@ -128,6 +128,18 @@ class FederatedServer(fl_comm_pb2_grpc.FederatedLearningServicer):
         self._global_weights: Weights = [
             np.array(w, dtype=np.float32, copy=True) for w in initial_weights
         ]
+        # Canonical tensor names for the wire, when the model is a known spec.
+        # Purely descriptive: decoding is order-based, names aid observability.
+        try:
+            from .archspec import SPECS
+
+            spec = SPECS.get(config.model.name)
+            names = spec.canonical_names() if spec is not None else None
+            self._tensor_names = (
+                names if names and len(names) == len(self._global_weights) else None
+            )
+        except Exception:  # noqa: BLE001 - names are optional decoration
+            self._tensor_names = None
         self._model_version = 0
         self._round = 0
         self._cohort: set[str] = set()
@@ -206,12 +218,16 @@ class FederatedServer(fl_comm_pb2_grpc.FederatedLearningServicer):
             record = _ClientRecord(client_id=client_id, shard_index=self._next_shard)
             self._clients[client_id] = record
             self._next_shard += 1
+            # `framework` is logged for observability ONLY. Nothing anywhere in
+            # this server branches on it: the wire format is the whole contract,
+            # and the server cannot tell clients apart beyond this log line.
             LOGGER.info(
-                "registered %s -> shard %d (%d/%d)",
+                "registered %s -> shard %d (%d/%d, framework=%s)",
                 client_id,
                 record.shard_index,
                 len(self._clients),
                 self.config.data.num_clients,
+                request.framework or "unspecified",
             )
             self._lock.notify_all()
 
@@ -252,7 +268,7 @@ class FederatedServer(fl_comm_pb2_grpc.FederatedLearningServicer):
                     model_version=self._model_version,
                 )
 
-            weights_msg = weights_to_proto(self._global_weights)
+            weights_msg = weights_to_proto(self._global_weights, names=self._tensor_names)
             sent = proto_nbytes(weights_msg)
             self._bytes_sent += sent
             remaining = 0.0
