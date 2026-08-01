@@ -307,6 +307,7 @@ def exp_nodp_control(
     seeds: tuple[int, ...],
     rounds: int,
     cohorts: tuple[int, ...],
+    local_epochs: int = 1,
 ) -> dict:
     """Federated no-DP control at selected cohort sizes.
 
@@ -328,8 +329,9 @@ def exp_nodp_control(
                 clients_per_round=m,
                 rounds=rounds,
                 dp=False,
+                local_epochs=local_epochs,
                 seed=seed,
-                label=f"nodp/m={m}/seed={seed}",
+                label=f"nodp/m={m}/E={local_epochs}/seed={seed}",
             )
             for seed in seeds
         ]
@@ -527,6 +529,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--epochs-list", default="1,5,10", help="local-epoch values for budget (comma-separated)"
     )
+    parser.add_argument("--local-epochs", type=int, default=1, help="local epochs for nodp_control")
     parser.add_argument("--epochs", type=int, default=5, help="baseline epochs")
     parser.add_argument("--out", default=None)
     parser.add_argument("--log-level", default="INFO")
@@ -543,7 +546,7 @@ def main(argv: list[str] | None = None) -> int:
         result = exp_sweep(args.writers, seeds, args.target_epsilon, args.clip, args.rounds)
     elif args.experiment == "nodp_control":
         cohorts = tuple(int(c) for c in args.cohorts.split(","))
-        result = exp_nodp_control(args.writers, seeds, args.rounds, cohorts)
+        result = exp_nodp_control(args.writers, seeds, args.rounds, cohorts, args.local_epochs)
     elif args.experiment == "budget":
         epochs_list = tuple(int(e) for e in args.epochs_list.split(","))
         result = exp_budget(args.writers, seeds, args.m or 200, epochs_list, args.rounds)
