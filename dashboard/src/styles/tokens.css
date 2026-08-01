@@ -1,0 +1,77 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ---------------------------------------------------------------------------
+ * Instrument tokens.
+ *
+ * The palette carries meaning, not decoration:
+ *   --global  Prussian blue   the global model: structure, primary curves
+ *   --client  oxide red       client-local signals only
+ *   --budget  ochre           RESERVED: privacy budget depletion. If it is on
+ *                             screen, epsilon is being spent. Nowhere else.
+ *   --slate   muted slate     disabled, dropped, inactive
+ * Ground is pale grey-green vellum, not cream, not near-black.
+ * ------------------------------------------------------------------------- */
+:root {
+  --ground: #eceee9;
+  --ground-raised: #f0f2ee;
+  --ink: #3a3d3c; /* graphite: type, rules, axes */
+  --global: #1f3a5f;
+  --client: #a64b2a;
+  --budget: #c9922e;
+  --slate: #6b7a82;
+  --rule: #c6cbc2;
+}
+
+[data-theme="dark"] {
+  /* Deep ink ground, same hues raised in luminance. Not neon. */
+  --ground: #1a1d1c;
+  --ground-raised: #222624;
+  --ink: #d4d8d2;
+  --global: #7fa3d4;
+  --client: #d98a63;
+  --budget: #e0b566;
+  --slate: #8a99a1;
+  --rule: #3b403d;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground: #1a1d1c;
+    --ground-raised: #222624;
+    --ink: #d4d8d2;
+    --global: #7fa3d4;
+    --client: #d98a63;
+    --budget: #e0b566;
+    --slate: #8a99a1;
+    --rule: #3b403d;
+  }
+}
+
+html {
+  background: var(--ground);
+  color: var(--ink);
+}
+
+/* Every numeric readout is instrument data: tabular digits, no jitter. */
+.readout {
+  font-family: "Cascadia Mono", "JetBrains Mono", Consolas, ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Visible keyboard focus, everywhere, without exception. */
+:focus-visible {
+  outline: 2px solid var(--global);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
