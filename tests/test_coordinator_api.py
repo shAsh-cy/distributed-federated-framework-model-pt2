@@ -282,3 +282,17 @@ class TestOpenApiSurface:
             "/architectures",
         ):
             assert path in spec["paths"], path
+
+
+class TestCommittedSchema:
+    def test_committed_openapi_matches_the_live_app(self):
+        """docs/openapi.json is the frontend's contract; drift fails here,
+        not in a broken generated client. Regenerate with
+        scripts/export_openapi.py."""
+        import json
+        from pathlib import Path
+
+        from scripts.export_openapi import build_schema
+
+        committed = json.loads(Path("docs/openapi.json").read_text(encoding="utf-8"))
+        assert committed == build_schema()

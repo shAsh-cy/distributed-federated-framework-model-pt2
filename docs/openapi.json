@@ -1,0 +1,417 @@
+{
+  "components": {
+    "schemas": {
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "RunDetail": {
+        "properties": {
+          "config": {
+            "title": "Config",
+            "type": "object"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "number"
+          },
+          "final_metrics": {
+            "title": "Final Metrics",
+            "type": "object"
+          },
+          "group_key": {
+            "title": "Group Key",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "is_aggregate": {
+            "default": false,
+            "title": "Is Aggregate",
+            "type": "boolean"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "num_events": {
+            "title": "Num Events",
+            "type": "integer"
+          },
+          "seed": {
+            "title": "Seed",
+            "type": "integer"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "created_at",
+          "status",
+          "source",
+          "label",
+          "config",
+          "num_events"
+        ],
+        "title": "RunDetail",
+        "type": "object"
+      },
+      "RunSummary": {
+        "properties": {
+          "created_at": {
+            "title": "Created At",
+            "type": "number"
+          },
+          "group_key": {
+            "title": "Group Key",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "is_aggregate": {
+            "default": false,
+            "title": "Is Aggregate",
+            "type": "boolean"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "seed": {
+            "title": "Seed",
+            "type": "integer"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "created_at",
+          "status",
+          "source",
+          "label"
+        ],
+        "title": "RunSummary",
+        "type": "object"
+      },
+      "StartRunRequest": {
+        "properties": {
+          "config": {
+            "title": "Config",
+            "type": "object"
+          }
+        },
+        "required": [
+          "config"
+        ],
+        "title": "StartRunRequest",
+        "type": "object"
+      },
+      "StartRunResponse": {
+        "properties": {
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id"
+        ],
+        "title": "StartRunResponse",
+        "type": "object"
+      },
+      "StopRunResponse": {
+        "properties": {
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "stopping": {
+            "title": "Stopping",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "run_id",
+          "stopping",
+          "detail"
+        ],
+        "title": "StopRunResponse",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "FastAPI application: REST endpoints plus the WebSocket event stream.\n\nProtocol split (the architectural rule this service exists to embody):\ngRPC + protobuf is the internal protocol between training clients and the\naggregator \u2014 binary weights, deadlines, staleness. HTTP + WebSocket + JSON is\nthe external surface for browsers and tooling \u2014 observe, start, stop, replay.\nNeither leaks into the other: training clients never speak HTTP, and this\nservice never carries model weights.\n\nWebSocket contract (`/runs/{id}/events?since=N`):\n\n1. On connect, every persisted event with ``seq >= since`` is sent, in order.\n2. The stream then continues live, still strictly ordered by ``seq``.\n3. Reconnection is replay: send the last processed seq + 1 as ``since`` and\n   the stream resumes without gaps or duplicates.\n4. A consumer that falls > queue-bound behind is evicted (see store); it\n   reconnects via (3) and has lost nothing.\n5. After a terminal event (run_completed / run_failed) the server closes the\n   socket; a connection to an already-terminal run replays and closes.\n",
+    "title": "Federated Learning Coordinator",
+    "version": "schema-v1"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/algorithms": {
+      "get": {
+        "operationId": "list_algorithms_algorithms_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "type": "object"
+                  },
+                  "title": "Response List Algorithms Algorithms Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Algorithms"
+      }
+    },
+    "/architectures": {
+      "get": {
+        "operationId": "list_architectures_architectures_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "type": "object"
+                  },
+                  "title": "Response List Architectures Architectures Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Architectures"
+      }
+    },
+    "/datasets": {
+      "get": {
+        "operationId": "list_datasets_datasets_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "type": "object"
+                  },
+                  "title": "Response List Datasets Datasets Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Datasets"
+      }
+    },
+    "/runs": {
+      "get": {
+        "operationId": "list_runs_runs_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/RunSummary"
+                  },
+                  "title": "Response List Runs Runs Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Runs"
+      },
+      "post": {
+        "operationId": "start_run_runs_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartRunRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StartRunResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start Run"
+      }
+    },
+    "/runs/{run_id}": {
+      "get": {
+        "operationId": "get_run_runs__run_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Run"
+      }
+    },
+    "/runs/{run_id}/stop": {
+      "post": {
+        "operationId": "stop_run_runs__run_id__stop_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StopRunResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stop Run"
+      }
+    }
+  }
+}
