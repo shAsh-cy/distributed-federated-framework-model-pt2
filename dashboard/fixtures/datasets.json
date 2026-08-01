@@ -1,0 +1,19 @@
+[
+ {
+  "name": "fashion_mnist",
+  "num_classes": 10,
+  "model": "small_cnn",
+  "partition_schemes": [
+   "iid",
+   "dirichlet"
+  ]
+ },
+ {
+  "name": "femnist",
+  "num_classes": 62,
+  "model": "femnist_cnn",
+  "partition_schemes": [
+   "natural"
+  ]
+ }
+]

@@ -1,0 +1,12 @@
+[
+ {
+  "name": "fedavg",
+  "description": "Sample-count weighted federated averaging.",
+  "differentially_private": false
+ },
+ {
+  "name": "dp-fedavg",
+  "description": "Client-level DP FedAvg: per-client update clipping and Gaussian noise at the aggregator via TFF; epsilon computed by the RDP accountant, never chosen.",
+  "differentially_private": true
+ }
+]
