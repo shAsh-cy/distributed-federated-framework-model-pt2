@@ -84,6 +84,88 @@ function frameworkGlyph(framework: string | null): string {
   return "";
 }
 
+/** Media-query hook; SSR-safe default is the wide layout. */
+function useNarrowViewport(): boolean {
+  const [narrow, setNarrow] = useState(
+    () => typeof window !== "undefined" && window.matchMedia("(max-width: 640px)").matches,
+  );
+  useEffect(() => {
+    const query = window.matchMedia("(max-width: 640px)");
+    const onChange = (e: MediaQueryListEvent) => setNarrow(e.matches);
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
+  }, []);
+  return narrow;
+}
+
+/**
+ * Narrow-viewport topology: a vertical list of client rows with sparkline
+ * histograms. The same information, genuinely usable at 375px — not a
+ * shrunken ring.
+ */
+function TopologyList({
+  run,
+  onPin,
+  pinned,
+}: {
+  run: RunState;
+  onPin: (clientId: string | null) => void;
+  pinned: string | null;
+}) {
+  return (
+    <ol aria-label={`Client list: ${run.clientOrder.length} clients`} className="flex flex-col">
+      {run.clientOrder.map((id) => {
+        const c = run.clients.get(id);
+        if (!c) return null;
+        const active = c.phase === "sampled" || c.phase === "reported";
+        const max = Math.max(...c.info.label_histogram, 1);
+        return (
+          <li key={id}>
+            <button
+              onClick={() => onPin(pinned === id ? null : id)}
+              aria-pressed={pinned === id}
+              className={`flex w-full items-center gap-2 border-b border-rule py-1.5 text-left ${
+                c.phase === "dropped" ? "opacity-50" : ""
+              }`}
+            >
+              <span
+                className="h-2.5 w-2.5 shrink-0 rounded-full"
+                style={{ background: active ? "var(--client)" : "var(--slate)" }}
+                aria-hidden="true"
+              />
+              <span className="readout w-14 shrink-0 text-xs">
+                {id.replace("client-", "c")}
+                {frameworkGlyph(c.framework)}
+              </span>
+              <svg width={70} height={16} aria-hidden="true" className="shrink-0">
+                {c.info.label_histogram.map((count, i) => {
+                  const bw = 70 / c.info.label_histogram.length;
+                  const h = Math.max(count > 0 ? 1 : 0, (count / max) * 14);
+                  return (
+                    <rect
+                      key={i}
+                      x={i * bw}
+                      y={16 - h}
+                      width={Math.max(0.5, bw - 0.8)}
+                      height={h}
+                      fill={active ? "var(--client)" : "var(--slate)"}
+                    />
+                  );
+                })}
+              </svg>
+              <span className="readout flex-1 text-right text-xs text-slate">
+                {c.phase === "reported"
+                  ? `acc ${c.lastLocalAccuracy?.toFixed(3) ?? "—"}`
+                  : c.phase}
+              </span>
+            </button>
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
 export function Topology({
   run,
   highlightRound,
@@ -96,6 +178,7 @@ export function Topology({
   pinned: string | null;
 }) {
   const reduced = useReducedMotion();
+  const narrow = useNarrowViewport();
   const [hovered, setHovered] = useState<string | null>(null);
   const [focusIndex, setFocusIndex] = useState(0);
   const containerRef = useRef<SVGSVGElement>(null);
@@ -174,6 +257,10 @@ export function Topology({
   const lastCurvePoint = run.curve[run.curve.length - 1];
   const aggregatedThisRound =
     lastCurvePoint !== undefined && lastCurvePoint.round === run.currentRound;
+
+  if (narrow) {
+    return <TopologyList run={run} onPin={onPin} pinned={pinned} />;
+  }
 
   return (
     <div className="flex flex-col gap-2 lg:flex-row lg:items-start">
