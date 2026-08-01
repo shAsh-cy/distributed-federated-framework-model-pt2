@@ -48,9 +48,9 @@ flowchart TB
     subgraph clients["Clients — one container each, one private shard each"]
         direction LR
         D1[("Shard 1<br/>raw images")]
-        C1["Client 1<br/>local Keras training"]
+        C1["Client 1<br/>local training (TF)"]
         DN[("Shard N<br/>raw images")]
-        CN["Client N<br/>local Keras training"]
+        CN["Client N<br/>local training (TF or PyTorch)"]
         D1 --> C1
         DN --> CN
     end
@@ -125,7 +125,98 @@ network.
 | DP clipping, Gaussian noise, aggregation state | TensorFlow Federated |
 | ε accounting (RDP, Poisson-subsampled Gaussian) | `dp_accounting`, from TensorFlow Privacy |
 | Registration, round barrier, deadlines, staleness, transport | this repo — `fl/proto/`, `fl/server.py`, `fl/client.py` |
+| Architecture spec, framework adapters | this repo — `fl/archspec.py`, `fl/adapters.py` |
 | Model, data loading, non-IID partitioning | this repo — `fl/models.py`, `fl/data.py` |
+
+---
+
+## One federation, two frameworks
+
+TensorFlow clients and PyTorch clients train the same model in the same
+rounds, and **the server cannot tell them apart**. The gRPC wire format is the
+entire contract: the server aggregates canonical tensors and branches on
+nothing — a client's framework appears in exactly one registration log line,
+for observability, and nowhere in control flow.
+
+**The canonical wire format** (`fl/proto/fl_comm.proto`, schema V2): named
+tensors with explicit shape and dtype (float32 only; anything else is rejected
+at decode, never coerced), C-contiguous buffers in a fixed layout. The layout
+is TensorFlow's native one — chosen deliberately, not neutrally invented: the
+server's aggregation stack (numpy + TFF's DP factory) consumes that form
+directly, so the aggregator performs **zero conversions** and stays
+framework-blind. Everyone else converts at their own edge. A client announcing
+schema V1 is refused at registration with a reason, without affecting the
+round the V2 clients are in.
+
+**The conversions that actually bite** live in `fl/adapters.py` and nowhere
+else:
+
+| Tensor | PyTorch native | Canonical (= TF native) | Conversion |
+|---|---|---|---|
+| Conv2D kernel | `(out, in, h, w)` | `(h, w, in, out)` | `permute(2, 3, 1, 0)` |
+| Dense/Linear kernel | `(out, in)` | `(in, out)` | transpose |
+| BatchNorm | `weight` / `bias` / `running_mean` / `running_var` | `gamma` / `beta` / `moving_mean` / `moving_variance` | rename, order fixed |
+| Activations | NCHW | NHWC | data flipped once per shard |
+| **Flatten order** | `(channel, h, w)` | `(h, w, channel)` | permute **before** flatten |
+
+The last row is the trap: after all kernel transposes, both models have
+identical parameter counts and identical per-layer shapes — and compute
+**different functions**, because a dense-after-flatten kernel's input axis is
+indexed in whatever order the flatten walked the feature map. The PyTorch
+model therefore permutes activations back to NHWC before flattening, and a
+test proves this line is load-bearing by flattening the wrong way and
+asserting parity breaks. A second genuine cross-framework difference found by
+the parity tests: Keras defaults BatchNorm ε to 1e-3, torch to 1e-5 —
+identical weights, measurably different outputs — so ε is now an explicit
+field of the shared architecture spec, threaded into both builders.
+
+**The architecture is defined once**, framework-neutrally (`fl/archspec.py`);
+both the Keras and the torch model are constructed from the same spec object,
+and tests assert identical parameter counts and per-layer canonical shapes.
+Round-trip (TF → canonical → torch → canonical → TF) is asserted **exact** —
+the conversions are pure permutations, so tolerance would only hide bugs —
+and identical weights on an identical batch produce matching forward passes
+in both frameworks within float32 tolerance.
+
+**Differential privacy stays at the aggregator, uniformly.** Client-level DP
+via TFF's Gaussian factory applies to the aggregate regardless of who trained
+what — a mixed pool where some clients ran local DP (e.g. Opacus) and others
+relied on server-side DP would give different clients different guarantees
+and make the composed privacy statement unstateable. One mechanism, one ε,
+every client covered identically. (Opacus is deliberately absent.)
+
+**Mixed pool, for real:**
+
+```bash
+docker compose -f docker/docker-compose.mixed.yml up --build
+```
+
+3 TensorFlow clients + 2 PyTorch clients + 1 server — same image, same
+config; the only difference between the client services is a `--framework`
+flag. Verified end to end: every container exits 0, both frameworks' updates
+are accepted in every round, and the run reaches 78.7 % — inside the pure-TF
+demo's 77–79 % band.
+
+**Does a mixed pool train as well as a pure one?** Three seeds each,
+`configs/default.yaml` (10 clients, 20 rounds, no DP), full gRPC path
+(`./scripts/compare_frameworks.sh`), final accuracy:
+
+| Seed | Pure (10 TF) | Mixed (6 TF + 4 PyTorch) |
+|---|---|---|
+| 42 | 0.8773 | 0.8715 |
+| 43 | 0.8783 | 0.8740 |
+| 44 | 0.8754 | 0.8746 |
+| **Mean (range)** | **0.877 (0.003)** | **0.873 (0.003)** |
+
+The mixed pool lands 0.36 pp below pure on the mean — within the run-to-run
+bands this repo has measured for gRPC runs (registration order alone moves
+the 5-round demo by ±2 pp), though the three-seed ranges at this very stable
+config are smaller, so a sub-half-point systematic offset from local-training
+dynamics (framework batching/shuffling RNG) cannot be excluded. What the
+adapter tests do exclude is a conversion defect: layout bugs are
+catastrophic, not sub-half-point — the flatten-order control demonstrates
+exactly that — and round-trips are bit-exact while forward passes agree to
+1e-4.
 
 ---
 
@@ -396,7 +487,7 @@ same no-EOF-pipe warning that applies to every TFF-touching script here.
 pytest --cov=fl --cov-report=term-missing
 ```
 
-**240 tests, 89 % statement coverage**, run on every push by GitHub Actions
+**269 tests, 89 % statement coverage**, run on every push by GitHub Actions
 alongside `ruff check` and `ruff format --check`. Four core areas, one file
 each: `tests/test_rpc.py` (transport, bit-identical weight round-trip,
 oversized and malformed payloads), `tests/test_aggregation.py` (FedAvg
@@ -486,6 +577,15 @@ is in memory and does not survive a restart (clients re-register and reclaim the
 shards, but the model version resets to 0); config validation accepts exactly two
 dataset/model pairs (`fashion_mnist`/`small_cnn`, `femnist`/`femnist_cnn`) and
 rejects mismatched combinations.
+
+Multi-framework specifics: **torch is pinned at 2.0.1**, the newest version
+installable beside TFF's exact `typing-extensions==4.5.*` pin (torch ≥ 2.1
+requires ≥ 4.8); and in any process importing both frameworks, **torch must be
+imported before TensorFlow** — TF-first breaks torch's `std::random_device`
+and aborts at the first torch RNG use. The client and the test suite enforce
+the order; a new entry point that imports both must too. The adapter layer
+supports Conv2D/Dense/BatchNorm architectures — the spec grammar of
+`fl/archspec.py` — not arbitrary graphs.
 
 ---
 
