@@ -12,11 +12,21 @@
 # Platform note: TFF ships Linux-only wheels (manylinux_2_31_x86_64) and requires
 # Python >=3.9,<3.12. Use Python 3.10 on Linux, WSL2, or the provided Docker images.
 --find-links https://storage.googleapis.com/jax-releases/jax_releases.html
+--extra-index-url https://download.pytorch.org/whl/cpu
 
 # --- Federated learning stack ---
 tensorflow==2.14.1
 tensorflow-federated==0.87.0
 tensorflow-privacy==0.9.0
+
+# --- PyTorch clients (CPU build; the +cpu local tag needs the extra index) ---
+# torch 2.0.1 is the newest torch that tolerates typing-extensions==4.5.*,
+# which TFF pins exactly; torch >=2.1 requires typing-extensions>=4.8 and is
+# therefore uninstallable beside tensorflow-federated. Verified empirically:
+# this pin imports cleanly alongside tf 2.14.1 / tff 0.87.0 / numpy 1.25.2.
+# The plain PyPI torch wheel would drag in ~2 GB of nvidia-* CUDA packages;
+# the +cpu build from the pytorch index does not.
+torch==2.0.1+cpu
 
 # --- Privacy accounting ---
 dp-accounting==0.4.3
