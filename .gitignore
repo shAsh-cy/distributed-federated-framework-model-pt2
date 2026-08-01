@@ -48,3 +48,7 @@ Thumbs.db
 
 # Diagnostic run logs (the JSON alongside them is committed)
 docs/*.log
+
+# Local run logs
+*.log
+.claude/

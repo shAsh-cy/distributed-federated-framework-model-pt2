@@ -44,48 +44,17 @@ SMALL_CNN_PARAMS: int = 225_034
 FEMNIST_CNN_PARAMS: int = 231_742
 
 
-def _build_cnn(num_classes: int, name: str, seed: int | None = None) -> tf.keras.Model:
-    """Shared 28x28 CNN backbone with a configurable logits width.
-
-    Args:
-        num_classes: Output dimension of the logits layer.
-        name: Keras model name (also the config-facing registry key).
-        seed: If given, every weight initialiser is seeded from it, so two calls
-            with the same seed produce bit-identical initial weights. The server
-            relies on this to construct the initial global model deterministically.
-
-    Returns:
-        An uncompiled Keras model. Compilation is the caller's job because the
-        server (evaluation only) and the clients (training) want different
-        optimisers.
-    """
-    init = (
-        (lambda: tf.keras.initializers.GlorotUniform(seed=seed))
-        if seed is not None
-        else (lambda: "glorot_uniform")
-    )
-    return tf.keras.Sequential(
-        [
-            tf.keras.layers.Input(shape=INPUT_SHAPE),
-            tf.keras.layers.Conv2D(
-                32, 3, activation="relu", kernel_initializer=init(), name="conv1"
-            ),
-            tf.keras.layers.MaxPooling2D(2, name="pool1"),
-            tf.keras.layers.Conv2D(
-                64, 3, activation="relu", kernel_initializer=init(), name="conv2"
-            ),
-            tf.keras.layers.MaxPooling2D(2, name="pool2"),
-            tf.keras.layers.Flatten(name="flatten"),
-            tf.keras.layers.Dense(128, activation="relu", kernel_initializer=init(), name="dense1"),
-            tf.keras.layers.Dense(num_classes, kernel_initializer=init(), name="logits"),
-        ],
-        name=name,
-    )
-
-
 def build_small_cnn(seed: int | None = None) -> tf.keras.Model:
-    """Build the Fashion-MNIST CNN (10 classes)."""
-    return _build_cnn(NUM_CLASSES, "small_cnn", seed)
+    """Build the Fashion-MNIST CNN (10 classes).
+
+    Constructed from the framework-neutral spec in :mod:`fl.archspec` — the
+    same spec the PyTorch twin is built from — with layer order, names and
+    initialisers identical to the original hand-written Sequential, so a
+    given seed still produces bit-identical initial weights.
+    """
+    from .archspec import SMALL_CNN_SPEC, build_tf
+
+    return build_tf(SMALL_CNN_SPEC, seed)
 
 
 def build_femnist_cnn(seed: int | None = None) -> tf.keras.Model:
@@ -95,8 +64,11 @@ def build_femnist_cnn(seed: int | None = None) -> tf.keras.Model:
     LEAF reference CNN (~6.6M parameters): DP noise scales with sqrt(d), CPU
     round time scales with d, and keeping d within 3% of the Fashion-MNIST model
     makes noise magnitudes directly comparable across the two datasets.
+    Constructed from :data:`fl.archspec.FEMNIST_CNN_SPEC`.
     """
-    return _build_cnn(FEMNIST_CLASSES, "femnist_cnn", seed)
+    from .archspec import FEMNIST_CNN_SPEC, build_tf
+
+    return build_tf(FEMNIST_CNN_SPEC, seed)
 
 
 _BUILDERS = {"small_cnn": build_small_cnn, "femnist_cnn": build_femnist_cnn}

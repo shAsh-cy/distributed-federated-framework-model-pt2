@@ -8,6 +8,8 @@ server.
 
 from __future__ import annotations
 
+import time
+
 import grpc
 import numpy as np
 import pytest
@@ -217,6 +219,7 @@ def test_truncated_tensor_buffer_is_rejected_by_the_decoder():
     msg = fl_comm_pb2.ModelWeights()
     tensor = msg.tensors.add()
     tensor.name = "t0"
+    tensor.dtype = fl_comm_pb2.TENSOR_DTYPE_FLOAT32
     tensor.shape.extend([4, 4])  # claims 64 bytes
     tensor.data = b"\x00" * 32  # carries 32
     with pytest.raises(SerializationError, match="declares shape .* but carries 32 bytes"):
@@ -244,6 +247,7 @@ def test_server_rejects_a_malformed_payload_without_crashing():
 
         bad = fl_comm_pb2.ModelWeights()
         tensor = bad.tensors.add()
+        tensor.dtype = fl_comm_pb2.TENSOR_DTYPE_FLOAT32
         tensor.name = "t0"
         tensor.shape.extend([2, 3])
         tensor.data = b"\x01" * 7  # not 24 bytes
@@ -337,3 +341,61 @@ def test_unknown_client_polling_is_refused_with_not_found():
             stub.GetGlobalModel(PB.GetGlobalModelRequest(client_id="ghost"))
         assert excinfo.value.code() == grpc.StatusCode.NOT_FOUND
         channel.close()
+
+
+# -- schema versioning (V2) --------------------------------------------------
+
+
+class TestSchemaVersioning:
+    def test_v1_client_is_rejected_with_reason(self):
+        with ServerHarness() as h:
+            c = FakeClient(h.address)
+            response = c.register(protocol_version=PB.PROTOCOL_VERSION_V1)
+            assert not response.accepted
+            assert "protocol version mismatch" in response.rejection_reason
+            c.close()
+
+    def test_unspecified_version_is_rejected(self):
+        with ServerHarness() as h:
+            c = FakeClient(h.address)
+            assert not c.register(protocol_version=PB.PROTOCOL_VERSION_UNSPECIFIED).accepted
+            c.close()
+
+    def test_unsupported_version_does_not_affect_the_round(self):
+        """A V1 client is refused while V2 clients complete the round normally."""
+        config = make_config(
+            data={"num_clients": 2},
+            training={"client_fraction": 1.0, "rounds": 1},
+            server={"round_deadline_seconds": 5.0, "min_clients_per_round": 2},
+        )
+        with ServerHarness(config) as h:
+            a, b = FakeClient(h.address, fill=1.0), FakeClient(h.address, fill=3.0)
+            assert a.register(desired="a").accepted
+            assert b.register(desired="b").accepted
+            # The V1 client is refused between the good registrations and the
+            # round; nothing downstream may change for the others.
+            bad = FakeClient(h.address)
+            assert not bad.register(protocol_version=PB.PROTOCOL_VERSION_V1).accepted
+
+            h.run_rounds_in_background()
+            deadline = time.monotonic() + 10.0
+            while h.server._round < 1 and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert a.submit(1, 0).status == PB.UPDATE_STATUS_ACCEPTED
+            assert b.submit(1, 0).status == PB.UPDATE_STATUS_ACCEPTED
+            h._thread.join(timeout=30)
+            assert h.error is None
+            # Both accepted updates aggregated: mean of fills 1.0 and 3.0.
+            assert np.allclose(h.server.global_weights()[0], 2.0)
+            a.close()
+            b.close()
+            bad.close()
+
+    def test_dtype_travels_and_unsupported_dtype_rejected(self):
+        msg = weights_to_proto([np.ones((2, 2), dtype=np.float32)])
+        assert msg.tensors[0].dtype == PB.TENSOR_DTYPE_FLOAT32
+        assert np.array_equal(proto_to_weights(msg)[0], np.ones((2, 2)))
+
+        msg.tensors[0].dtype = PB.TENSOR_DTYPE_UNSPECIFIED
+        with pytest.raises(SerializationError, match="unsupported dtype"):
+            proto_to_weights(msg)

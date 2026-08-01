@@ -39,6 +39,7 @@ def weights_to_proto(weights: Weights, names: list[str] | None = None) -> fl_com
         tensor.name = names[i] if names is not None else f"t{i}"
         tensor.shape.extend(int(d) for d in arr.shape)
         tensor.data = arr.tobytes()
+        tensor.dtype = fl_comm_pb2.TENSOR_DTYPE_FLOAT32
     return msg
 
 
@@ -46,6 +47,12 @@ def proto_to_weights(msg: fl_comm_pb2.ModelWeights) -> Weights:
     """Decode a ``ModelWeights`` message, validating every tensor."""
     out: Weights = []
     for i, tensor in enumerate(msg.tensors):
+        if tensor.dtype != fl_comm_pb2.TENSOR_DTYPE_FLOAT32:
+            raise SerializationError(
+                f"tensor {i} ({tensor.name!r}) declares unsupported dtype {tensor.dtype}; "
+                "only TENSOR_DTYPE_FLOAT32 is supported and payloads are rejected rather "
+                "than coerced"
+            )
         shape = tuple(int(d) for d in tensor.shape)
         if any(d < 0 for d in shape):
             raise SerializationError(f"tensor {i} ({tensor.name!r}) has negative dimension {shape}")

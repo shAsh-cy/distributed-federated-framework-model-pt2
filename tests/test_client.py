@@ -36,8 +36,8 @@ def _tiny_shard(n: int = 48) -> tuple[np.ndarray, np.ndarray]:
     return x, y
 
 
-def _real_client(address, config, client_id, n=48) -> FederatedClient:
-    client = FederatedClient(config, address, desired_client_id=client_id)
+def _real_client(address, config, client_id, n=48, framework="tensorflow") -> FederatedClient:
+    client = FederatedClient(config, address, desired_client_id=client_id, framework=framework)
     client.register()
     client.x, client.y = _tiny_shard(n)
     return client
@@ -256,3 +256,57 @@ def test_client_does_not_retrain_a_round_it_already_attempted():
         thread.join(timeout=30)
         client.close()
         filler.close()
+
+
+# -- torch clients -----------------------------------------------------------
+
+
+def test_torch_client_trains_and_its_update_is_accepted():
+    """The same full path as the Keras client, trained on PyTorch.
+
+    The server in this test is the unmodified FederatedServer; if it needed to
+    know the framework, this test could not pass.
+    """
+    initial = build_small_cnn(seed=0).get_weights()
+    config = _model_config()
+    with ServerHarness(config, initial=initial) as h:
+        client = _real_client(h.address, config, "torch-0", framework="torch")
+        filler = FakeClient(h.address)
+        filler.register(desired="filler")
+
+        h.run_rounds_in_background()
+        deadline = time.monotonic() + 30
+        while h.server._round == 0 and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+        response = client.stub.GetGlobalModel(PB.GetGlobalModelRequest(client_id=client.client_id))
+        assert response.action == PB.ROUND_ACTION_TRAIN
+
+        weights, n, loss, accuracy = client.train_one_round(response)
+        assert n == 48
+        assert np.isfinite(loss)
+        assert 0.0 <= accuracy <= 1.0
+        # Canonical shapes on the wire, regardless of torch's native layout.
+        assert [w.shape for w in weights] == [w.shape for w in initial]
+        assert any(not np.array_equal(a, b) for a, b in zip(weights, initial, strict=True))
+
+        reply = client.submit(response.round, response.model_version, weights, n, loss, accuracy)
+        assert reply.status == PB.UPDATE_STATUS_ACCEPTED
+
+        filler.submit(response.round, response.model_version)
+        h._thread.join(timeout=60)
+        assert h.server.metrics, "round did not complete"
+        client.close()
+        filler.close()
+
+
+def test_framework_travels_at_registration_and_unknown_framework_rejected_locally():
+    config = _model_config()
+    with ServerHarness(config) as h:
+        client = FederatedClient(config, h.address, framework="torch")
+        client.register()
+        assert client.client_id  # a torch-announcing client registers normally
+        # Constructor validation is local: a typo'd framework never reaches the wire.
+        with pytest.raises(ValueError, match="framework must be one of"):
+            FederatedClient(config, h.address, framework="jax")
+        client.close()

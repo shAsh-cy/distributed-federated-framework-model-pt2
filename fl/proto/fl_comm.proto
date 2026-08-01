@@ -23,27 +23,73 @@ syntax = "proto3";
 package fl.v1;
 
 // Bumped whenever this schema changes incompatibly.
+//
+// V2 added an explicit per-tensor dtype and fixed the canonical tensor layout
+// (below) so that clients built on different ML frameworks can interoperate.
+// V1 lacked the dtype field and made no layout promise; a V1 client's payload
+// would be reinterpreted rather than converted, so V1 is refused, not accepted
+// leniently.
 enum ProtocolVersion {
   PROTOCOL_VERSION_UNSPECIFIED = 0;
   PROTOCOL_VERSION_V1 = 1;
+  PROTOCOL_VERSION_V2 = 2;
 }
 
 // ---------------------------------------------------------------------------
 // Weight payloads
 // ---------------------------------------------------------------------------
-
-// One tensor of a model's weight list. Weights are sent as raw little-endian
-// float32 buffers plus an explicit shape, rather than as `repeated float`, so
-// that a 225k-parameter model costs ~0.86 MiB instead of paying varint overhead
-// per element.
-message Tensor {
-  string name = 1;
-  repeated int32 shape = 2;
-  // Raw float32 buffer, C-contiguous. Length must equal 4 * prod(shape).
-  bytes data = 3;
+//
+// CANONICAL TENSOR LAYOUT (the wire contract every framework converts to)
+// ----------------------------------------------------------------------
+// Buffers are C-contiguous (row-major) with these axis semantics:
+//
+//   Conv2D kernel   (kernel_h, kernel_w, in_channels, out_channels)
+//   Conv2D bias     (out_channels,)
+//   Dense kernel    (in_features, out_features)
+//   Dense bias      (out_features,)
+//   BatchNorm       four tensors named gamma, beta, moving_mean,
+//                   moving_variance, each (channels,)
+//
+// Dense kernels that FOLLOW a flatten of a convolutional feature map assume
+// the flatten walked the map in (height, width, channel) order — i.e. the
+// input axis of that kernel is indexed h*W*C + w*C + c.
+//
+// WHY THIS LAYOUT. It is TensorFlow's native layout, chosen deliberately
+// rather than neutrally invented: the server's aggregation stack (numpy plus
+// TFF's DP factory) consumes exactly this form, so the aggregator performs
+// zero conversions and stays framework-blind — it cannot tell which framework
+// produced an update because every update is byte-compatible by the time it
+// arrives. Frameworks whose native layout differs (PyTorch: Conv2D
+// (out, in, h, w), Linear (out, in), channels-first activations and therefore
+// a (channel, height, width) flatten order) convert at their own edge, in
+// their adapter, and nowhere else.
+//
+// The dtype travels explicitly so a decoder never guesses element size.
+// FLOAT32 is the only supported value; anything else is rejected at decode,
+// not coerced, because silent casting would change the numerics the privacy
+// accounting was computed over.
+enum TensorDtype {
+  TENSOR_DTYPE_UNSPECIFIED = 0;
+  TENSOR_DTYPE_FLOAT32 = 1;
 }
 
-// An ordered model weight list. Order matches keras Model.get_weights().
+// One tensor of a model's weight list. Weights are sent as raw little-endian
+// buffers plus an explicit shape and dtype, rather than as `repeated float`,
+// so a 225k-parameter model costs ~0.86 MiB instead of paying varint overhead
+// per element.
+message Tensor {
+  // Canonical name, e.g. "conv1/kernel", "bn1/gamma". Stable across
+  // frameworks: adapters map native parameter names to these.
+  string name = 1;
+  repeated int32 shape = 2;
+  // Raw little-endian buffer, C-contiguous, in the canonical layout above.
+  // Length must equal itemsize(dtype) * prod(shape).
+  bytes data = 3;
+  TensorDtype dtype = 4;
+}
+
+// An ordered model weight list in canonical form. Order matches the canonical
+// architecture spec (identical to keras Model.get_weights() order).
 message ModelWeights {
   repeated Tensor tensors = 1;
 }
@@ -57,6 +103,12 @@ message RegisterRequest {
   // Optional stable identity so a restarted client can reclaim its own shard
   // instead of being handed a fresh one.
   string desired_client_id = 2;
+  // Self-reported local training framework (e.g. "tensorflow", "torch").
+  // OBSERVABILITY ONLY: the server logs it at registration and must never
+  // branch on it. The wire format above is the whole interoperability
+  // contract; a server that treats frameworks differently has broken the
+  // design this field exists to help verify.
+  string framework = 3;
 }
 
 message RegisterResponse {
