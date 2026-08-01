@@ -46,9 +46,16 @@ class MaxPool2D:
 
 @dataclass(frozen=True)
 class BatchNorm:
-    """Channel-wise batch normalisation over the preceding conv's channels."""
+    """Channel-wise batch normalisation over the preceding conv's channels.
+
+    ``epsilon`` is part of the layer's *function*, not an implementation
+    detail: Keras defaults to 1e-3 and PyTorch to 1e-5, and leaving each
+    framework its own default makes two models with identical weights compute
+    measurably different outputs. The spec fixes one value for both.
+    """
 
     name: str
+    epsilon: float = 1e-3
 
 
 @dataclass(frozen=True)
@@ -205,7 +212,9 @@ def build_tf(spec: ArchSpec, seed: int | None = None):
         elif isinstance(layer, MaxPool2D):
             layers.append(tf.keras.layers.MaxPooling2D(layer.pool, name=layer.name))
         elif isinstance(layer, BatchNorm):
-            layers.append(tf.keras.layers.BatchNormalization(name=layer.name))
+            layers.append(
+                tf.keras.layers.BatchNormalization(epsilon=layer.epsilon, name=layer.name)
+            )
         elif isinstance(layer, Flatten):
             layers.append(tf.keras.layers.Flatten(name=layer.name))
         elif isinstance(layer, Dense):
@@ -244,7 +253,7 @@ def build_torch(spec: ArchSpec):
                 elif isinstance(layer, MaxPool2D):
                     mods[layer.name] = nn.MaxPool2d(layer.pool)
                 elif isinstance(layer, BatchNorm):
-                    mods[layer.name] = nn.BatchNorm2d(channels)
+                    mods[layer.name] = nn.BatchNorm2d(channels, eps=layer.epsilon)
                 elif isinstance(layer, Flatten):
                     features = shape[0]
                 elif isinstance(layer, Dense):
