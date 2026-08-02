@@ -69,6 +69,9 @@ class RoundMetrics:
     dropped_clients: list[str] = field(default_factory=list)
     aggregated: bool = True
     epsilon: float | None = None
+    #: Clip in force after this round's quantile adaptation; None on the
+    #: fixed-clip and no-DP paths.
+    adapted_clip: float | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -85,6 +88,7 @@ class RoundMetrics:
             "dropped_clients": list(self.dropped_clients),
             "aggregated": self.aggregated,
             "epsilon": self.epsilon,
+            "adapted_clip": self.adapted_clip,
         }
 
 
@@ -573,6 +577,11 @@ class FederatedServer(fl_comm_pb2_grpc.FederatedLearningServicer):
             version = self._model_version
 
         epsilon = self.epsilon_fn(round_index) if self.epsilon_fn is not None else None
+        # Present only on the adaptive-clipping aggregator; logged so the clip
+        # trajectory can be plotted against the measured median update norm.
+        adapted_clip = getattr(self.aggregator, "current_clip", None)
+        if getattr(self.aggregator, "name", "") != "adaptive-dp-fedavg":
+            adapted_clip = None
 
         metrics = RoundMetrics(
             round=round_index,
@@ -588,6 +597,7 @@ class FederatedServer(fl_comm_pb2_grpc.FederatedLearningServicer):
             dropped_clients=dropped,
             aggregated=aggregated,
             epsilon=epsilon,
+            adapted_clip=adapted_clip,
         )
         self.metrics.append(metrics)
 
@@ -645,6 +655,10 @@ def build_server(config: Config) -> FederatedServer:
         noise_multiplier=config.privacy.noise_multiplier,
         l2_clip_norm=config.privacy.l2_clip_norm,
         clients_per_round=config.clients_per_round,
+        adaptive_clipping=config.privacy.adaptive_clipping,
+        adaptive_target_quantile=config.privacy.adaptive_target_quantile,
+        adaptive_learning_rate=config.privacy.adaptive_learning_rate,
+        adaptive_clipped_count_stddev=config.privacy.adaptive_clipped_count_stddev,
     )
 
     epsilon_fn = None
