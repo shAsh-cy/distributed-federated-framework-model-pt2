@@ -183,9 +183,17 @@ def simulate(
     record_norms: bool = True,
     record_predictions: bool = False,
     server_lr: float = 1.0,
+    aggregator: object | None = None,
     label: str = "",
 ) -> dict:
-    """Run one federated experiment in-process and return everything measured."""
+    """Run one federated experiment in-process and return everything measured.
+
+    ``aggregator`` overrides the default construction — used by
+    scripts/final_batch.py to inject an adaptive-clipping aggregator (fresh
+    instance per run; DP aggregators carry cross-round state). When it exposes
+    ``current_clip``, the per-round clip is recorded as ``adapted_clip`` and
+    the clipped fraction is measured against it, not ``l2_clip_norm``.
+    """
     seed_everything(seed)
     started = time.monotonic()
 
@@ -197,11 +205,12 @@ def simulate(
     trainer = compile_for_training(build_model("small_cnn"), learning_rate, momentum)
     evaluator = compile_for_evaluation(build_model("small_cnn"))
 
-    aggregator = (
-        _DiagnosticDPAggregator(noise_multiplier, l2_clip_norm, clients_per_round)
-        if dp
-        else FedAvgAggregator()
-    )
+    if aggregator is None:
+        aggregator = (
+            _DiagnosticDPAggregator(noise_multiplier, l2_clip_norm, clients_per_round)
+            if dp
+            else FedAvgAggregator()
+        )
 
     rng = np.random.default_rng(seed)
     history: list[dict] = []
@@ -258,9 +267,12 @@ def simulate(
             loss, acc = float("nan"), 0.0
 
         # Fraction of this round's updates whose norm exceeded the clipping
-        # threshold, i.e. the updates clipping actually touched.
+        # threshold, i.e. the updates clipping actually touched. Measured
+        # against the adapted clip when the aggregator carries one.
+        adapted_clip = getattr(aggregator, "current_clip", None)
+        clip_ref = adapted_clip if adapted_clip is not None else l2_clip_norm
         clipped_fraction = (
-            float(np.mean([n > l2_clip_norm for n in pre_clip_norms])) if pre_clip_norms else None
+            float(np.mean([n > clip_ref for n in pre_clip_norms])) if pre_clip_norms else None
         )
 
         history.append(
@@ -273,6 +285,7 @@ def simulate(
                 if pre_clip_norms
                 else None,
                 "clipped_fraction": clipped_fraction,
+                "adapted_clip": float(adapted_clip) if adapted_clip is not None else None,
                 "applied_delta_norm": float(applied),
                 "global_weight_norm": float(l2_norm(global_weights)) if finite else None,
                 "aggregated": aggregated,
@@ -294,6 +307,7 @@ def simulate(
         "clients_per_round": clients_per_round,
         "rounds": rounds,
         "dp": dp,
+        "aggregator": getattr(aggregator, "name", "fedavg"),
         "noise_multiplier": noise_multiplier,
         "l2_clip_norm": l2_clip_norm,
         "server_lr": server_lr,

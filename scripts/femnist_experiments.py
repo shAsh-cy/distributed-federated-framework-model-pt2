@@ -117,9 +117,18 @@ def simulate(
     momentum: float = 0.9,
     batch_size: int = 32,
     local_epochs: int = 1,
+    aggregator: object | None = None,
     label: str = "",
 ) -> dict:
-    """One federated run over a pre-loaded population. Returns everything measured."""
+    """One federated run over a pre-loaded population. Returns everything measured.
+
+    ``aggregator`` overrides the default construction — used by
+    scripts/final_batch.py to inject an adaptive-clipping aggregator. Pass a
+    FRESH instance per run: DP aggregators carry cross-round state. When the
+    aggregator exposes ``current_clip`` (the adaptive one does), the per-round
+    clip is recorded as ``adapted_clip`` and the clipped fraction is measured
+    against it rather than against the static ``l2_clip_norm``.
+    """
     seed_everything(seed)
     started = time.monotonic()
     num_clients = len(shards)
@@ -128,11 +137,12 @@ def simulate(
     trainer = compile_for_training(build_model("femnist_cnn"), learning_rate, momentum)
     evaluator = compile_for_evaluation(build_model("femnist_cnn"))
 
-    aggregator = (
-        DPFedAvgAggregator(noise_multiplier, l2_clip_norm, clients_per_round)
-        if dp
-        else FedAvgAggregator()
-    )
+    if aggregator is None:
+        aggregator = (
+            DPFedAvgAggregator(noise_multiplier, l2_clip_norm, clients_per_round)
+            if dp
+            else FedAvgAggregator()
+        )
 
     rng = np.random.default_rng(seed)
     history: list[dict] = []
@@ -172,13 +182,16 @@ def simulate(
         else:
             loss, acc = float("nan"), 0.0
 
+        adapted_clip = getattr(aggregator, "current_clip", None)
+        clip_ref = adapted_clip if adapted_clip is not None else l2_clip_norm
         history.append(
             {
                 "round": rnd,
                 "accuracy": float(acc),
                 "loss": float(loss),
                 "median_pre_clip_norm": float(np.median(pre_clip_norms)),
-                "clipped_fraction": float(np.mean([n > l2_clip_norm for n in pre_clip_norms])),
+                "clipped_fraction": float(np.mean([n > clip_ref for n in pre_clip_norms])),
+                "adapted_clip": float(adapted_clip) if adapted_clip is not None else None,
                 "applied_delta_norm": float(applied),
                 "seconds": round(time.monotonic() - round_started, 2),
                 "finite": bool(finite),
@@ -201,6 +214,7 @@ def simulate(
         "clients_per_round": clients_per_round,
         "rounds": rounds,
         "dp": dp,
+        "aggregator": getattr(aggregator, "name", "fedavg"),
         "noise_multiplier": noise_multiplier,
         "l2_clip_norm": l2_clip_norm,
         "seed": seed,
