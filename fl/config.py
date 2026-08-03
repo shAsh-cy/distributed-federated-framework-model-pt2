@@ -195,6 +195,19 @@ class PrivacyConfig:
     l2_clip_norm: float = 1.0
     noise_multiplier: float = 0.0
     delta: float = 1e-5
+    #: Quantile-based adaptive clipping (Andrew et al. 2021, via TFF's
+    #: gaussian_adaptive factory). When true, ``l2_clip_norm`` is the INITIAL
+    #: clip estimate and the clip then tracks the configured quantile of the
+    #: actual update norms. The fixed-norm path remains the default.
+    adaptive_clipping: bool = False
+    #: Fraction of updates that should escape clipping; 0.5 tracks the median.
+    adaptive_target_quantile: float = 0.5
+    #: Geometric adaptation rate: the clip moves by at most exp(rate)/round.
+    adaptive_learning_rate: float = 0.2
+    #: Stddev of the noise on the clipped-count used for the quantile estimate.
+    #: None uses TFF's default (clients_per_round / 20). Part of the privacy
+    #: budget -- see fl.aggregation.adaptive_noise_breakdown.
+    adaptive_clipped_count_stddev: float | None = None
 
     def validate(self) -> None:
         _require(
@@ -206,6 +219,22 @@ class PrivacyConfig:
             f"privacy.noise_multiplier must be >= 0, got {self.noise_multiplier}",
         )
         _require(0.0 < self.delta < 1.0, f"privacy.delta must be in (0, 1), got {self.delta}")
+        _require(
+            0.0 < self.adaptive_target_quantile < 1.0,
+            "privacy.adaptive_target_quantile must be strictly inside (0, 1) -- 0 would "
+            "clip everything and 1 nothing, and neither is a quantile to track; got "
+            f"{self.adaptive_target_quantile}",
+        )
+        _require(
+            self.adaptive_learning_rate > 0.0,
+            f"privacy.adaptive_learning_rate must be > 0, got {self.adaptive_learning_rate}",
+        )
+        if self.adaptive_clipped_count_stddev is not None:
+            _require(
+                self.adaptive_clipped_count_stddev > 0.0,
+                "privacy.adaptive_clipped_count_stddev must be > 0 when set, got "
+                f"{self.adaptive_clipped_count_stddev}",
+            )
         if self.enabled:
             _require(
                 self.noise_multiplier > 0.0,

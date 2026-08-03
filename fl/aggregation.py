@@ -33,11 +33,14 @@ penalties, and both show up in the recorded results.
 
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass
 from typing import Protocol
 
 import numpy as np
+
+LOGGER = logging.getLogger("fl.aggregation")
 
 Weights = list[np.ndarray]
 
@@ -327,6 +330,160 @@ def compute_epsilon(
     return float(accountant.get_epsilon(delta))
 
 
+class AdaptiveDPFedAvgAggregator:
+    """Client-level DP FedAvg with quantile-based adaptive clipping.
+
+    Wraps ``tff.aggregators.DifferentiallyPrivateFactory.gaussian_adaptive``
+    (Andrew et al. 2021): the clipping norm starts at ``initial_l2_clip_norm``
+    and geometrically tracks the ``target_quantile`` of the actual client
+    update norms, adapting by at most ``exp(learning_rate)`` per round.
+
+    Privacy accounting: the quantile estimate itself consumes budget. TF
+    Privacy splits the nominal noise multiplier ``z`` into an inflated value
+    noise ``z_v`` on the sum and a Gaussian on the clipped count with stddev
+    ``sigma_b`` (sensitivity 1/2), such that ``z^-2 = z_v^-2 + (2*sigma_b)^-2``
+    -- the joint release is exactly a Gaussian mechanism at the nominal ``z``,
+    so :func:`compute_epsilon` over the nominal multiplier remains the correct
+    total. :func:`adaptive_noise_breakdown` reports the split, and the test
+    suite anchors it to a hand-computed case.
+
+    The adapted clip is exposed per round: ``current_clip`` after each
+    ``aggregate`` call, and the full trajectory in ``clip_history`` -- so the
+    adaptation can be plotted against the measured median update norm.
+    """
+
+    name = "adaptive-dp-fedavg"
+
+    def __init__(
+        self,
+        noise_multiplier: float,
+        initial_l2_clip_norm: float,
+        clients_per_round: int,
+        target_quantile: float = 0.5,
+        learning_rate: float = 0.2,
+        clipped_count_stddev: float | None = None,
+    ) -> None:
+        if noise_multiplier <= 0:
+            raise ValueError(
+                f"noise_multiplier must be > 0 for a DP aggregator, got {noise_multiplier}"
+            )
+        if initial_l2_clip_norm <= 0:
+            raise ValueError(f"initial_l2_clip_norm must be > 0, got {initial_l2_clip_norm}")
+        if clients_per_round < 1:
+            raise ValueError(f"clients_per_round must be >= 1, got {clients_per_round}")
+        if not 0.0 < target_quantile < 1.0:
+            raise ValueError(f"target_quantile must be in (0, 1), got {target_quantile}")
+        if learning_rate <= 0:
+            raise ValueError(f"learning_rate must be > 0, got {learning_rate}")
+        # Validates the split is achievable (raises otherwise):
+        adaptive_noise_breakdown(noise_multiplier, clients_per_round, clipped_count_stddev)
+
+        self.noise_multiplier = float(noise_multiplier)
+        self.initial_l2_clip_norm = float(initial_l2_clip_norm)
+        self.clients_per_round = int(clients_per_round)
+        self.target_quantile = float(target_quantile)
+        self.learning_rate = float(learning_rate)
+        self.clipped_count_stddev = clipped_count_stddev
+        #: Clip in force for the NEXT round (starts at the initial estimate).
+        self.current_clip: float = float(initial_l2_clip_norm)
+        #: Adapted clip after each aggregate() call, in order.
+        self.clip_history: list[float] = []
+        self._process = None
+        self._state = None
+        self._value_type = None
+
+    def _ensure_process(self, template: Weights) -> None:
+        import tensorflow_federated as tff
+
+        value_type = tff.to_type(
+            [tff.TensorType(np.float32, np.asarray(w).shape) for w in template]
+        )
+        if self._process is not None and value_type == self._value_type:
+            return
+        kwargs = {}
+        if self.clipped_count_stddev is not None:
+            kwargs["clipped_count_stddev"] = float(self.clipped_count_stddev)
+        factory = tff.aggregators.DifferentiallyPrivateFactory.gaussian_adaptive(
+            noise_multiplier=self.noise_multiplier,
+            clients_per_round=float(self.clients_per_round),
+            initial_l2_norm_clip=self.initial_l2_clip_norm,
+            target_unclipped_quantile=self.target_quantile,
+            learning_rate=self.learning_rate,
+            **kwargs,
+        )
+        self._value_type = value_type
+        self._process = factory.create(value_type)
+        self._state = self._process.initialize()
+
+    def aggregate(self, updates: list[ClientUpdate], global_weights: Weights) -> Weights:
+        """Clip adaptively, noise, average the deltas; record the new clip."""
+        validate_updates(updates)
+        deltas = [subtract(u.weights, global_weights) for u in updates]
+        self._ensure_process(global_weights)
+
+        output = self._process.next(self._state, deltas)
+        self._state = output.state
+        # measurements['dp_query_metrics']['clip'] is the clip the quantile
+        # estimator derived from THIS round, in force for the next one.
+        metrics = output.measurements.get("dp_query_metrics", {})
+        clip = metrics.get("clip")
+        if clip is not None:
+            self.current_clip = float(clip)
+            self.clip_history.append(self.current_clip)
+            LOGGER.info("adaptive clip after round %d: %.6f", len(self.clip_history), clip)
+        mean_delta = [np.asarray(t, dtype=np.float32) for t in output.result]
+        return add(global_weights, mean_delta)
+
+
+def adaptive_noise_breakdown(
+    noise_multiplier: float,
+    clients_per_round: int,
+    clipped_count_stddev: float | None = None,
+) -> dict:
+    """The privacy-budget split behind adaptive clipping, made explicit.
+
+    TF Privacy's ``QuantileAdaptiveClipSumQuery`` spends part of the nominal
+    budget on the quantile estimate: the clipped-count bit (sensitivity 1/2
+    per client) is noised with stddev ``sigma_b`` -- an effective Gaussian
+    multiplier of ``2 * sigma_b`` -- and the value noise is inflated to
+    ``z_v = (z^-2 - (2 sigma_b)^-2)^(-1/2)`` so the two compose back to
+    exactly the nominal ``z`` by Gaussian sigma-additivity
+    (``z^-2 = z_v^-2 + (2 sigma_b)^-2``, Andrew et al. 2021). dp_accounting
+    sees this structure directly: TFF's aggregator state carries a
+    ComposedDpEvent of the two GaussianDpEvents, verified empirically.
+
+    Consequence for reporting: total epsilon for an adaptive run is
+    :func:`compute_epsilon` at the NOMINAL multiplier -- unchanged from the
+    fixed-clip path -- and this function reports where that budget goes.
+
+    Raises:
+        ValueError: when ``2 * sigma_b <= z``, which would demand negative
+            value-noise variance; the quantile estimate would be consuming
+            more than the whole budget.
+    """
+    if noise_multiplier <= 0:
+        raise ValueError(f"noise_multiplier must be > 0, got {noise_multiplier}")
+    sigma_b = (
+        float(clipped_count_stddev)
+        if clipped_count_stddev is not None
+        else clients_per_round / 20.0
+    )
+    count_multiplier = 2.0 * sigma_b  # sensitivity of the clipped bit is 1/2
+    if count_multiplier <= noise_multiplier:
+        raise ValueError(
+            f"clipped_count_stddev={sigma_b} spends the entire budget on the quantile "
+            f"estimate: need 2*stddev > noise_multiplier ({noise_multiplier}). Raise the "
+            "count stddev (slower adaptation) or lower the nominal noise."
+        )
+    value_multiplier = (noise_multiplier**-2 - count_multiplier**-2) ** -0.5
+    return {
+        "nominal_noise_multiplier": float(noise_multiplier),
+        "value_noise_multiplier": float(value_multiplier),
+        "count_noise_multiplier": float(count_multiplier),
+        "clipped_count_stddev": float(sigma_b),
+    }
+
+
 def calibrate_noise_multiplier(
     target_epsilon: float,
     sampling_rate: float,
@@ -387,10 +544,24 @@ def make_aggregator(
     noise_multiplier: float,
     l2_clip_norm: float,
     clients_per_round: int,
+    adaptive_clipping: bool = False,
+    adaptive_target_quantile: float = 0.5,
+    adaptive_learning_rate: float = 0.2,
+    adaptive_clipped_count_stddev: float | None = None,
 ) -> Aggregator:
-    """Build the aggregator a config asks for."""
+    """Build the aggregator a config asks for. Fixed clipping is the default;
+    the adaptive path is opt-in and l2_clip_norm becomes its initial estimate."""
     if not dp_enabled:
         return FedAvgAggregator()
+    if adaptive_clipping:
+        return AdaptiveDPFedAvgAggregator(
+            noise_multiplier=noise_multiplier,
+            initial_l2_clip_norm=l2_clip_norm,
+            clients_per_round=clients_per_round,
+            target_quantile=adaptive_target_quantile,
+            learning_rate=adaptive_learning_rate,
+            clipped_count_stddev=adaptive_clipped_count_stddev,
+        )
     return DPFedAvgAggregator(
         noise_multiplier=noise_multiplier,
         l2_clip_norm=l2_clip_norm,
