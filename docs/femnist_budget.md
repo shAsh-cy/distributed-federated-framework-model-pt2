@@ -62,7 +62,34 @@ not at FedProx.
 
 ## 3. Rounds at E = 10: the curve, not the endpoint
 
-<!-- RESULTS:R_CURVE -->
+Three seeds (42/43/44) run to 100 rounds each at E = 10, m = 200, no DP;
+R = 20 and R = 50 are read off the same curves, so every row below comes
+from one set of runs (raw per-round data:
+[`_femnist_r_curve.json`](_femnist_r_curve.json)):
+
+| R | Mean accuracy | Range | Per-seed | Cumulative wall-clock per seed |
+|---|---|---|---|---|
+| 20 | 0.7279 | 0.0021 | 0.729 / 0.728 / 0.727 | ~44 min |
+| 50 | 0.7758 | 0.0049 | 0.773 / 0.776 / 0.778 | ~1 h 45 min |
+| 100 | **0.8037** | 0.0032 | 0.803 / 0.803 / 0.806 | ~3 h 38 min |
+
+The shape, not just the endpoints: the mean curve crosses 70 % at round 15,
+75 % at round 29, and 80 % at round 92. The first 20 rounds buy 65.5 pp
+(from the ~10 % untrained floor), rounds 20–50 buy +4.8 pp, and rounds
+50–100 another +2.8 pp — diminishing, but **not exhausted**: over the last
+ten rounds the mean still moves inside a 0.799–0.804 band rather than
+sitting flat. Seed agreement stays tight the whole way (every range
+≤ 0.5 pp), so these are properties of the configuration, not of a lucky
+seed.
+
+Read against §4: the rounds axis keeps paying long after the cohort axis
+has stopped. Going m = 200 → 500 at R = 20 bought +0.01 pp for 2.5× the
+per-round compute; going R = 20 → 100 at m = 200 buys **+7.6 pp** for 5×
+the wall-clock. At R = 100 the gap to the 85.6 % pooled baseline is down to
+5.2 pp, and the curve's slope at round 100 (still climbing through the
+80 % line at round 92) says more rounds would close part — though, on this
+trajectory, plausibly not all — of what remains. That residual is the
+budget/heterogeneity question §4 deferred to here.
 
 ## 4. The cohort axis, re-asked at a budget where FedAvg trains
 
