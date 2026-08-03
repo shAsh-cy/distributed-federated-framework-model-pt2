@@ -20,6 +20,7 @@ from fl.secure_aggregation import (
     SecureAggregationError,
     SecureClient,
     SecureServer,
+    communication_cost,
     expand_mask,
     fixed_point_decode,
     fixed_point_encode,
@@ -205,9 +206,7 @@ class TestFullRound:
         for cid, values, weight in updates:
             server.submit(cid, clients[cid].masked_update(values, weight))
         for cid, values, weight in updates:
-            payload = np.concatenate(
-                [values.astype(np.float64).ravel() * weight, [float(weight)]]
-            )
+            payload = np.concatenate([values.astype(np.float64).ravel() * weight, [float(weight)]])
             plaintext = fixed_point_encode(payload)
             observed = server.submissions[cid]
             assert not np.array_equal(observed, plaintext)
@@ -295,3 +294,44 @@ class TestFullRound:
             SecureServer(threshold=1).submit("c9", np.zeros(3, dtype=np.uint64))
         with pytest.raises(ValueError, match="positive"):
             SecureClient("c0", 0).masked_update(np.zeros(3, dtype=np.float32), 0.0)
+
+
+class TestCommunicationCost:
+    def test_model_matches_the_recorded_bytes_exactly(self):
+        """The analytic model and the server's message log use the same
+        accounting; a run with both dropout stages must reconcile to the
+        byte."""
+        updates = _updates(6, size=32)
+        _, report = run_secure_round(
+            updates,
+            threshold=3,
+            drop_before_submit={"c0"},
+            drop_during_recovery={"c1"},
+        )
+        model = communication_cost(num_clients=6, num_params=32, dropouts=1, recovery_silent=1)
+        assert report["total_bytes"] == model["secure_total_bytes"]
+
+    def test_model_matches_a_clean_round_too(self):
+        updates = _updates(5, size=16)
+        _, report = run_secure_round(updates, threshold=3)
+        model = communication_cost(num_clients=5, num_params=16)
+        assert report["total_bytes"] == model["secure_total_bytes"]
+
+    def test_update_upload_is_twice_plain_fedavg(self):
+        """uint64 words versus float32: the per-client update itself costs
+        2x, before any keys or shares."""
+        model = communication_cost(num_clients=50, num_params=225_034)
+        ratio = model["per_client_upload_secure_bytes"] / model["per_client_upload_plain_bytes"]
+        assert 2.0 <= ratio < 2.001
+
+    def test_share_traffic_grows_quadratically(self):
+        small = communication_cost(num_clients=10, num_params=1000)
+        large = communication_cost(num_clients=100, num_params=1000)
+        assert (
+            large["breakdown"]["share_distribution"]
+            == 100 * small["breakdown"]["share_distribution"]
+        )
+
+    def test_nobody_left_to_respond_rejected(self):
+        with pytest.raises(ValueError, match="survive"):
+            communication_cost(num_clients=4, num_params=10, dropouts=2, recovery_silent=2)

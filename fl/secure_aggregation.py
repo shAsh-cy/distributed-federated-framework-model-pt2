@@ -359,8 +359,7 @@ class SecureServer:
         for (owner, kind), shares in collected.items():
             if len(shares) < self.threshold:
                 raise InsufficientSharesError(
-                    f"{len(shares)} shares of {owner}/{kind} survive; "
-                    f"threshold is {self.threshold}"
+                    f"{len(shares)} shares of {owner}/{kind} survive; threshold is {self.threshold}"
                 )
 
         sizes = {words.size for words in self.submissions.values()}
@@ -386,9 +385,7 @@ class SecureServer:
             for survivor_id in survivors:
                 survivor_order, survivor_public = self.roster[survivor_id]
                 pair_secret = shared_secret(private, survivor_public)
-                mask = expand_mask(
-                    hashlib.sha256(b"secagg-mask|" + pair_secret).digest(), length
-                )
+                mask = expand_mask(hashlib.sha256(b"secagg-mask|" + pair_secret).digest(), length)
                 # Cancel the term the SURVIVOR added for this pair.
                 total = total - mask if survivor_order < dropped_order else total + mask
 
@@ -440,3 +437,52 @@ def run_secure_round(
 
     responders = set(ids) - set(drop_before_submit) - set(drop_during_recovery)
     return server.unmask(clients, responders)
+
+
+# ---------------------------------------------------------------------------
+# What masking costs
+# ---------------------------------------------------------------------------
+
+
+def communication_cost(
+    num_clients: int,
+    num_params: int,
+    dropouts: int = 0,
+    recovery_silent: int = 0,
+) -> dict:
+    """Bytes moved in one secure round versus plain FedAvg, by the same
+    accounting the server's message log uses (the tests hold the two equal).
+
+    Counts each logged message once. Client-to-client shares are routed
+    through the server, so their wire cost is really two hops; the model
+    single-counts them, which UNDERSTATES the true share traffic by 2x —
+    stated here rather than hidden. Plain FedAvg is modelled as one float32
+    update upload per client; its example-count integer is noise.
+    """
+    if dropouts + recovery_silent >= num_clients:
+        raise ValueError("at least one client must survive to respond")
+    n = num_clients
+    submitted = n - dropouts
+    responders = submitted - recovery_silent
+    vector_bytes = (num_params + 1) * WORD_BYTES
+    breakdown = {
+        "registration": n * PUBLIC_KEY_BYTES,
+        "roster_broadcast": n * n * (PUBLIC_KEY_BYTES + 8),
+        "share_distribution": n * n * 2 * SHARE_BYTES,
+        "masked_updates": submitted * vector_bytes,
+        "recovery_reveals": responders * n * SHARE_BYTES,
+    }
+    secure_total = sum(breakdown.values())
+    plain_total = n * num_params * 4
+    return {
+        "num_clients": n,
+        "num_params": num_params,
+        "dropouts": dropouts,
+        "recovery_silent": recovery_silent,
+        "breakdown": breakdown,
+        "secure_total_bytes": secure_total,
+        "plain_total_bytes": plain_total,
+        "overhead_ratio": secure_total / plain_total,
+        "per_client_upload_secure_bytes": vector_bytes,
+        "per_client_upload_plain_bytes": num_params * 4,
+    }
