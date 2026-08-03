@@ -21,5 +21,7 @@ export default defineConfig({
     globals: true,
     setupFiles: ["tests/setup.ts"],
     css: false,
+    // e2e/ is Playwright's, run via `npm run e2e`; vitest must not collect it.
+    exclude: ["e2e/**", "node_modules/**", "dist/**"],
   },
 });

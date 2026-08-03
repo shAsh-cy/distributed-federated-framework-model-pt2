@@ -484,6 +484,19 @@ Fashion-matched budget; a cohort benefit could still emerge at operating
 points where FedAvg itself progresses. Full write-up:
 **[docs/femnist_cohort.md](docs/femnist_cohort.md)**.
 
+**The follow-up found that operating point, and the answer holds there
+too.** Keeping m = 200 and raising local epochs to E = 10 takes the same
+population from 8 % to **72.8 %** inside the same 20 rounds (3 seeds, range
+0.2 pp) — the stall was optimisation budget, not federation. At that working
+budget the cohort axis, re-asked, saturates: m = 5 → 50 buys +4.6 pp,
+200 → 500 buys **+0.01 pp** at 2.5× the compute. The rounds axis keeps
+paying instead: **80.4 % at R = 100** (range 0.3 pp), leaving 5.2 pp to the
+85.6 % pooled ceiling. All of it no-DP by design; reintroducing DP at this
+budget first requires re-bracketing the clip, because median update norms at
+E = 10 are an order of magnitude above the ones the recorded FEMNIST clip
+bracket was measured on. Full write-up:
+**[docs/femnist_budget.md](docs/femnist_budget.md)**.
+
 ---
 
 ## Quickstart
@@ -578,7 +591,7 @@ same no-EOF-pipe warning that applies to every TFF-touching script here.
 pytest --cov=fl --cov-report=term-missing
 ```
 
-**307 tests, 92 % statement coverage (fl/ + coordinator/)**, run on every push by GitHub Actions
+**342 tests, 92 % statement coverage (fl/ + coordinator/)**, run on every push by GitHub Actions
 alongside `ruff check` and `ruff format --check`. Four core areas, one file
 each: `tests/test_rpc.py` (transport, bit-identical weight round-trip,
 oversized and malformed payloads), `tests/test_aggregation.py` (FedAvg
@@ -648,13 +661,17 @@ Stated plainly, because each of these is a real boundary of what was built.
   mean or Krum), no client reputation, and no authentication: any process that can
   reach the port can register and contribute.
 
-- **The FEMNIST results are harness results, and their scope is one operating
-  point.** The dataset swaps by config alone and the gRPC path accepts
-  `configs/femnist.yaml`, but the recorded FEMNIST numbers come from the
-  in-process harness (`scripts/femnist_experiments.py`) — nobody has started
-  1,000 client containers on one host. And the decoupled sweep measures the
-  Fashion-matched budget (20 rounds, 1 local epoch), where FedAvg itself is
-  optimiser-limited; it rules out a cohort effect *there*, not everywhere.
+- **The FEMNIST results are harness results, and the DP arm stops at the
+  stalled budget.** The dataset swaps by config alone and the gRPC path
+  accepts `configs/femnist.yaml`, but the recorded FEMNIST numbers come from
+  the in-process harness (`scripts/femnist_experiments.py`) — nobody has
+  started 1,000 client containers on one host. The decoupled DP sweep
+  measures the Fashion-matched budget (20 rounds, 1 local epoch), where
+  FedAvg itself is optimiser-limited; the follow-up re-asked the cohort
+  question at a budget where FedAvg trains and it saturates there too
+  ([docs/femnist_budget.md](docs/femnist_budget.md)) — but every run at the
+  working budget is no-DP, so no DP-cost figure exists on FEMNIST at an
+  operating point where training works.
 
 - **The FEMNIST source data carries a small upstream quirk**, found while
   testing and pinned rather than hidden: 0.84 % of test images are
@@ -682,8 +699,9 @@ supports Conv2D/Dense/BatchNorm architectures — the spec grammar of
 
 ## Roadmap — planned, not built
 
-Nothing in this section is implemented. Each item addresses a limitation stated
-above and contradicts no claim made above it.
+Nothing in this section is finished work — where groundwork already exists,
+the item says exactly which piece is missing. Each item addresses a
+limitation stated above and contradicts no claim made above it.
 
 - **Secure aggregation**, so the server learns only the sum and never an
   individual update — the gap named in Limitations.
@@ -699,21 +717,26 @@ above and contradicts no claim made above it.
   highest-value change available. (A configuration item, not a DP item; the
   sweep that establishes it is a simulation, and the committed configs and
   `results/*.json` still reflect the un-tuned value.)
-- **A training budget at which the FEMNIST population actually learns.** The
-  decoupled experiment's honest finding is that 20 rounds × 1 local epoch is
-  optimiser-limited on the 62-class writer population — no-DP FedAvg and DP
-  FedAvg are equally stuck at 5–8 % against an 85.6 % centralised ceiling.
-  More rounds, more local epochs, and/or a larger learning rate would move
-  the operating point to where the amplification-vs-averaging tension can
-  express itself in accuracy at all; only then is the cohort question (or any
-  DP-cost figure on FEMNIST) worth re-asking. On the Fashion-MNIST side, the
-  N = 2m tables remain as recorded, read with their stated confound.
-- **Adaptive clipping** (quantile-based, as TFF's adaptive factory supports) in
-  place of any fixed clipping norm. The update norm a clip should track falls
-  with cohort size — median 0.984 at m = 5 down to 0.289 at m = 200 — so no
-  single constant is right across configurations, and the sweep above does not
-  claim to have located the optimum at any cohort (it bottoms out at `S` = 0.5
-  with SNR still rising).
+- **DP reintroduction on FEMNIST at the working budget.** The budget search
+  is done — E = 10 trains (72.8 % at R = 20, 80.4 % at R = 100, under
+  *Results* and [docs/femnist_budget.md](docs/femnist_budget.md)) — but every
+  run there is no-DP by design. The unbuilt half is the DP arm at that
+  operating point, and it starts with re-bracketing the clip from scratch:
+  at E = 10 the median update norm is ≈ 1.9–2.6, an order of magnitude above
+  the updates the recorded FEMNIST bracket measured, so the old `S` = 0.5
+  would bind on every client and act as a server learning rate, not a
+  sensitivity bound. On the Fashion-MNIST side, the N = 2m tables remain as
+  recorded, read with their stated confound.
+- **Adaptive-vs-fixed clipping comparison runs.** The quantile-based
+  adaptive factory is implemented behind config
+  (`privacy.adaptive_clipping`, [docs/adaptive_clipping.md](docs/adaptive_clipping.md)),
+  with the ε split settled and unit-tested — what does not exist is the
+  evidence: Fashion-MNIST at its working budget and FEMNIST at E = 10,
+  adaptive versus best fixed clip, three seeds each. Until those run, the
+  fixed path stays the default and no claim is made that adaptation helps.
+  The motivation stands: the norm a clip should track falls with cohort
+  size — median 0.984 at m = 5 down to 0.289 at m = 200 — so no single
+  constant is right across configurations.
 - **Genuine multi-host deployment**, replacing single-host containers, to
   exercise real network latency, partitions and heterogeneous clients.
 - **Persistent server state**, so a restart resumes at the current model version
