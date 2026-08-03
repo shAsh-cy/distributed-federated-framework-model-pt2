@@ -1,0 +1,51 @@
+{
+ "id": "53f65391-94ef-46e5-8080-38c4270eaa9e",
+ "created_at": 1785608015.4063532,
+ "status": "completed",
+ "source": "imported",
+ "label": "grpc/dp_moderate",
+ "group_key": null,
+ "is_aggregate": false,
+ "seed": 42,
+ "config": {
+  "seed": 42,
+  "data": {
+   "dataset": "fashion_mnist",
+   "num_clients": 10,
+   "partition": "dirichlet",
+   "dirichlet_alpha": 0.5
+  },
+  "model": {
+   "name": "small_cnn"
+  },
+  "training": {
+   "rounds": 20,
+   "client_fraction": 0.5,
+   "local_epochs": 1,
+   "batch_size": 32,
+   "learning_rate": 0.01,
+   "momentum": 0.9
+  },
+  "server": {
+   "host": "127.0.0.1",
+   "port": 48057,
+   "round_deadline_seconds": 300.0,
+   "min_clients_per_round": 2,
+   "registration_timeout_seconds": 600.0,
+   "max_message_mb": 128
+  },
+  "privacy": {
+   "enabled": true,
+   "l2_clip_norm": 3.0,
+   "noise_multiplier": 2.0,
+   "delta": 1e-05
+  }
+ },
+ "final_metrics": {
+  "final_accuracy": 0.10000000149011612,
+  "final_loss": null,
+  "rounds_completed": 20,
+  "epsilon": 6.2284173254307245
+ },
+ "num_events": 42
+}

@@ -1,0 +1,972 @@
+[
+ {
+  "id": "4a092a44-ead0-4da7-ae5e-4f2c56913400",
+  "created_at": 1785608018.1892653,
+  "status": "completed",
+  "source": "imported",
+  "label": "_step_size/step_size/step-size/clip=0.5/server_lr=1.0000",
+  "group_key": "_step_size/step_size",
+  "is_aggregate": false,
+  "seed": null
+ },
+ {
+  "id": "2bf995f0-b71a-4348-9a6b-1f735d9ac5aa",
+  "created_at": 1785608018.1668186,
+  "status": "completed",
+  "source": "imported",
+  "label": "_step_size/step_size/step-size/clip=1.1/server_lr=0.4545",
+  "group_key": "_step_size/step_size",
+  "is_aggregate": false,
+  "seed": null
+ },
+ {
+  "id": "af432912-c122-44f7-b9e6-5059e58ada18",
+  "created_at": 1785608018.142303,
+  "status": "completed",
+  "source": "imported",
+  "label": "_step_size/step_size/step-size/clip=1.1/server_lr=1.0000",
+  "group_key": "_step_size/step_size",
+  "is_aggregate": false,
+  "seed": null
+ },
+ {
+  "id": "843f956b-9a3e-4c68-8ce1-490a3719472e",
+  "created_at": 1785608018.0570836,
+  "status": "completed",
+  "source": "imported",
+  "label": "_repeatability/repeatability/m=200/repeat/m=200/passB",
+  "group_key": "_repeatability/repeatability/m=200",
+  "is_aggregate": false,
+  "seed": null
+ },
+ {
+  "id": "2d46c810-991a-4449-a121-e8a5869d98b9",
+  "created_at": 1785608018.034638,
+  "status": "completed",
+  "source": "imported",
+  "label": "_repeatability/repeatability/m=200/repeat/m=200/passA",
+  "group_key": "_repeatability/repeatability/m=200",
+  "is_aggregate": false,
+  "seed": null
+ },
+ {
+  "id": "4a828d19-bc24-48d4-9c46-f0ae935cca15",
+  "created_at": 1785608018.0105624,
+  "status": "completed",
+  "source": "imported",
+  "label": "_repeatability/repeatability/m=100/repeat/m=100/passB",
+  "group_key": "_repeatability/repeatability/m=100",
+  "is_aggregate": false,
+  "seed": null
+ },
+ {
+  "id": "b92af77f-9ba4-4609-9296-cd5629a889a5",
+  "created_at": 1785608017.986653,
+  "status": "completed",
+  "source": "imported",
+  "label": "_repeatability/repeatability/m=100/repeat/m=100/passA",
+  "group_key": "_repeatability/repeatability/m=100",
+  "is_aggregate": false,
+  "seed": null
+ },
+ {
+  "id": "d16827b6-afa9-49c2-902a-4ee59da48f67",
+  "created_at": 1785608017.9617598,
+  "status": "completed",
+  "source": "imported",
+  "label": "_repeatability/repeatability/m=50/repeat/m=50/passB",
+  "group_key": "_repeatability/repeatability/m=50",
+  "is_aggregate": false,
+  "seed": null
+ },
+ {
+  "id": "46d3eec3-53d2-4ec7-9236-963acc2184d8",
+  "created_at": 1785608017.9396093,
+  "status": "completed",
+  "source": "imported",
+  "label": "_repeatability/repeatability/m=50/repeat/m=50/passA",
+  "group_key": "_repeatability/repeatability/m=50",
+  "is_aggregate": false,
+  "seed": null
+ },
+ {
+  "id": "3ec17dae-0ae1-4356-8b4e-58038540136b",
+  "created_at": 1785608017.9150841,
+  "status": "completed",
+  "source": "imported",
+  "label": "_repeatability/repeatability/m=20/repeat/m=20/passB",
+  "group_key": "_repeatability/repeatability/m=20",
+  "is_aggregate": false,
+  "seed": null
+ },
+ {
+  "id": "df37a49d-4883-4bd1-bebc-72ad97627ad7",
+  "created_at": 1785608017.8912365,
+  "status": "completed",
+  "source": "imported",
+  "label": "_repeatability/repeatability/m=20/repeat/m=20/passA",
+  "group_key": "_repeatability/repeatability/m=20",
+  "is_aggregate": false,
+  "seed": null
+ },
+ {
+  "id": "a713f052-b66b-4712-8963-c9a44c490b27",
+  "created_at": 1785608017.8646803,
+  "status": "completed",
+  "source": "imported",
+  "label": "_repeatability/repeatability/m=5/repeat/m=5/passB",
+  "group_key": "_repeatability/repeatability/m=5",
+  "is_aggregate": false,
+  "seed": null
+ },
+ {
+  "id": "afe5ff0a-b073-408a-8f91-d207bc476628",
+  "created_at": 1785608017.8381574,
+  "status": "completed",
+  "source": "imported",
+  "label": "_repeatability/repeatability/m=5/repeat/m=5/passA",
+  "group_key": "_repeatability/repeatability/m=5",
+  "is_aggregate": false,
+  "seed": null
+ },
+ {
+  "id": "be4f0526-a015-48a5-a58e-78f7b0ad109b",
+  "created_at": 1785608017.7059937,
+  "status": "completed",
+  "source": "imported",
+  "label": "_noise_sweep/noise_sweep/noise-sweep/z=1.0",
+  "group_key": "_noise_sweep/noise_sweep",
+  "is_aggregate": false,
+  "seed": null
+ },
+ {
+  "id": "bbbd6173-1eb9-4eb4-ac4d-5ddfe29b792a",
+  "created_at": 1785608017.677116,
+  "status": "completed",
+  "source": "imported",
+  "label": "_noise_sweep/noise_sweep/noise-sweep/z=0.5",
+  "group_key": "_noise_sweep/noise_sweep",
+  "is_aggregate": false,
+  "seed": null
+ },
+ {
+  "id": "c7f58f5e-4c30-4f77-982a-bed756c9ec0f",
+  "created_at": 1785608017.652501,
+  "status": "completed",
+  "source": "imported",
+  "label": "_noise_sweep/noise_sweep/noise-sweep/z=0.3",
+  "group_key": "_noise_sweep/noise_sweep",
+  "is_aggregate": false,
+  "seed": null
+ },
+ {
+  "id": "48dfeb17-39fc-4c7d-b786-86466454b2b6",
+  "created_at": 1785608017.625032,
+  "status": "completed",
+  "source": "imported",
+  "label": "_noise_sweep/noise_sweep/noise-sweep/z=0.1",
+  "group_key": "_noise_sweep/noise_sweep",
+  "is_aggregate": false,
+  "seed": null
+ },
+ {
+  "id": "7abccc26-d2a2-42ad-944f-f2319f69660b",
+  "created_at": 1785608017.599143,
+  "status": "completed",
+  "source": "imported",
+  "label": "_noise_sweep/noise_sweep/noise-sweep/z=0.0",
+  "group_key": "_noise_sweep/noise_sweep",
+  "is_aggregate": false,
+  "seed": null
+ },
+ {
+  "id": "c58f57a2-38c6-47d7-b80f-bb8ef44ce72e",
+  "created_at": 1785608017.5837371,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_sweep/sweep/m=500/summary",
+  "group_key": "_femnist_sweep/sweep/m=500",
+  "is_aggregate": true,
+  "seed": null
+ },
+ {
+  "id": "dc6b1d51-ce71-4f71-be52-55e1a54f39a1",
+  "created_at": 1785608017.5551443,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_sweep/sweep/m=500/sweep/m=500/seed=44",
+  "group_key": "_femnist_sweep/sweep/m=500",
+  "is_aggregate": false,
+  "seed": 44
+ },
+ {
+  "id": "c49586de-298d-4d3b-b0e8-ea9eef02065e",
+  "created_at": 1785608017.527928,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_sweep/sweep/m=500/sweep/m=500/seed=43",
+  "group_key": "_femnist_sweep/sweep/m=500",
+  "is_aggregate": false,
+  "seed": 43
+ },
+ {
+  "id": "1653a67e-3bb1-40b8-bbcd-9e54c47d8a78",
+  "created_at": 1785608017.4971874,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_sweep/sweep/m=500/sweep/m=500/seed=42",
+  "group_key": "_femnist_sweep/sweep/m=500",
+  "is_aggregate": false,
+  "seed": 42
+ },
+ {
+  "id": "5537be48-3576-4c4d-958e-c7aab71c4bee",
+  "created_at": 1785608017.4954844,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_sweep/sweep/m=200/summary",
+  "group_key": "_femnist_sweep/sweep/m=200",
+  "is_aggregate": true,
+  "seed": null
+ },
+ {
+  "id": "b74b1fb6-bb38-4008-93b2-68ad4bce89db",
+  "created_at": 1785608017.4735336,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_sweep/sweep/m=200/sweep/m=200/seed=44",
+  "group_key": "_femnist_sweep/sweep/m=200",
+  "is_aggregate": false,
+  "seed": 44
+ },
+ {
+  "id": "102bb2b9-3805-455a-8fe6-714770b65273",
+  "created_at": 1785608017.4489155,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_sweep/sweep/m=200/sweep/m=200/seed=43",
+  "group_key": "_femnist_sweep/sweep/m=200",
+  "is_aggregate": false,
+  "seed": 43
+ },
+ {
+  "id": "b85f7790-06ce-4fcd-8e3f-74ccf103e918",
+  "created_at": 1785608017.4271019,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_sweep/sweep/m=200/sweep/m=200/seed=42",
+  "group_key": "_femnist_sweep/sweep/m=200",
+  "is_aggregate": false,
+  "seed": 42
+ },
+ {
+  "id": "b7e5b2a9-01b5-48ee-bdc3-c6af7d866363",
+  "created_at": 1785608017.4257817,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_sweep/sweep/m=100/summary",
+  "group_key": "_femnist_sweep/sweep/m=100",
+  "is_aggregate": true,
+  "seed": null
+ },
+ {
+  "id": "7bfdd935-e186-4cd3-ae38-da1ac31acd58",
+  "created_at": 1785608017.3208747,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_sweep/sweep/m=100/sweep/m=100/seed=44",
+  "group_key": "_femnist_sweep/sweep/m=100",
+  "is_aggregate": false,
+  "seed": 44
+ },
+ {
+  "id": "753194d4-2670-4d48-bfe4-4292ca74f110",
+  "created_at": 1785608017.2964168,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_sweep/sweep/m=100/sweep/m=100/seed=43",
+  "group_key": "_femnist_sweep/sweep/m=100",
+  "is_aggregate": false,
+  "seed": 43
+ },
+ {
+  "id": "e776127a-1b3f-4b7f-b00c-c5ce3f2a71bc",
+  "created_at": 1785608017.273087,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_sweep/sweep/m=100/sweep/m=100/seed=42",
+  "group_key": "_femnist_sweep/sweep/m=100",
+  "is_aggregate": false,
+  "seed": 42
+ },
+ {
+  "id": "4807fe21-8311-47df-97b4-55059913712f",
+  "created_at": 1785608017.2719219,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_sweep/sweep/m=50/summary",
+  "group_key": "_femnist_sweep/sweep/m=50",
+  "is_aggregate": true,
+  "seed": null
+ },
+ {
+  "id": "cbb29879-d2d1-441f-83eb-5ffacc84e61a",
+  "created_at": 1785608017.2517557,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_sweep/sweep/m=50/sweep/m=50/seed=44",
+  "group_key": "_femnist_sweep/sweep/m=50",
+  "is_aggregate": false,
+  "seed": 44
+ },
+ {
+  "id": "484d251e-f7f6-40d3-af6d-02305b65acdf",
+  "created_at": 1785608017.230651,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_sweep/sweep/m=50/sweep/m=50/seed=43",
+  "group_key": "_femnist_sweep/sweep/m=50",
+  "is_aggregate": false,
+  "seed": 43
+ },
+ {
+  "id": "7af3e3ce-c41f-4342-8d27-3bd9df97894f",
+  "created_at": 1785608017.210364,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_sweep/sweep/m=50/sweep/m=50/seed=42",
+  "group_key": "_femnist_sweep/sweep/m=50",
+  "is_aggregate": false,
+  "seed": 42
+ },
+ {
+  "id": "52f24dae-ded2-4012-acc5-bb388d0699db",
+  "created_at": 1785608017.2089956,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_sweep/sweep/m=20/summary",
+  "group_key": "_femnist_sweep/sweep/m=20",
+  "is_aggregate": true,
+  "seed": null
+ },
+ {
+  "id": "cc052061-5019-4c33-9bf3-ccf6ae4e24b9",
+  "created_at": 1785608017.1851494,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_sweep/sweep/m=20/sweep/m=20/seed=44",
+  "group_key": "_femnist_sweep/sweep/m=20",
+  "is_aggregate": false,
+  "seed": 44
+ },
+ {
+  "id": "107c6c66-70fb-4ecd-a1f5-a74cc2151e91",
+  "created_at": 1785608017.160105,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_sweep/sweep/m=20/sweep/m=20/seed=43",
+  "group_key": "_femnist_sweep/sweep/m=20",
+  "is_aggregate": false,
+  "seed": 43
+ },
+ {
+  "id": "3a9edfd3-df36-4097-a843-15717c1121f3",
+  "created_at": 1785608017.137385,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_sweep/sweep/m=20/sweep/m=20/seed=42",
+  "group_key": "_femnist_sweep/sweep/m=20",
+  "is_aggregate": false,
+  "seed": 42
+ },
+ {
+  "id": "8fb1c9e3-07d0-43f0-9813-ae8295129552",
+  "created_at": 1785608017.1362188,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_sweep/sweep/m=5/summary",
+  "group_key": "_femnist_sweep/sweep/m=5",
+  "is_aggregate": true,
+  "seed": null
+ },
+ {
+  "id": "d986c7e8-81c0-4d0e-8777-52cd9afaacd1",
+  "created_at": 1785608017.1100357,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_sweep/sweep/m=5/sweep/m=5/seed=44",
+  "group_key": "_femnist_sweep/sweep/m=5",
+  "is_aggregate": false,
+  "seed": 44
+ },
+ {
+  "id": "4372e258-b4d8-4690-8ef8-78b3fbca8a54",
+  "created_at": 1785608017.084378,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_sweep/sweep/m=5/sweep/m=5/seed=43",
+  "group_key": "_femnist_sweep/sweep/m=5",
+  "is_aggregate": false,
+  "seed": 43
+ },
+ {
+  "id": "e6ce7b77-f058-4116-9cab-10a4933afc01",
+  "created_at": 1785608017.0585687,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_sweep/sweep/m=5/sweep/m=5/seed=42",
+  "group_key": "_femnist_sweep/sweep/m=5",
+  "is_aggregate": false,
+  "seed": 42
+ },
+ {
+  "id": "6e5e418c-3967-4ea2-bd84-74e7d00e5512",
+  "created_at": 1785608017.018089,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_nodp/nodp_control/m=500/summary",
+  "group_key": "_femnist_nodp/nodp_control/m=500",
+  "is_aggregate": true,
+  "seed": null
+ },
+ {
+  "id": "ffedfef6-7c7b-417b-8502-a2943fa45f1a",
+  "created_at": 1785608016.992053,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_nodp/nodp_control/m=500/nodp/m=500/seed=44",
+  "group_key": "_femnist_nodp/nodp_control/m=500",
+  "is_aggregate": false,
+  "seed": 44
+ },
+ {
+  "id": "9bcf9db2-d1bf-4629-a0de-905664cece9b",
+  "created_at": 1785608016.9692438,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_nodp/nodp_control/m=500/nodp/m=500/seed=43",
+  "group_key": "_femnist_nodp/nodp_control/m=500",
+  "is_aggregate": false,
+  "seed": 43
+ },
+ {
+  "id": "a21da907-86fb-4660-85c1-f017870bf95a",
+  "created_at": 1785608016.9453282,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_nodp/nodp_control/m=500/nodp/m=500/seed=42",
+  "group_key": "_femnist_nodp/nodp_control/m=500",
+  "is_aggregate": false,
+  "seed": 42
+ },
+ {
+  "id": "1922f211-5472-452a-94d7-a43e9ff8170d",
+  "created_at": 1785608016.9435105,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_nodp/nodp_control/m=50/summary",
+  "group_key": "_femnist_nodp/nodp_control/m=50",
+  "is_aggregate": true,
+  "seed": null
+ },
+ {
+  "id": "c89a6964-b975-4639-ad37-0ef3e9089f40",
+  "created_at": 1785608016.9211707,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_nodp/nodp_control/m=50/nodp/m=50/seed=44",
+  "group_key": "_femnist_nodp/nodp_control/m=50",
+  "is_aggregate": false,
+  "seed": 44
+ },
+ {
+  "id": "118db6d6-e9fb-489b-85e3-b584325c60d8",
+  "created_at": 1785608016.894326,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_nodp/nodp_control/m=50/nodp/m=50/seed=43",
+  "group_key": "_femnist_nodp/nodp_control/m=50",
+  "is_aggregate": false,
+  "seed": 43
+ },
+ {
+  "id": "d6171f86-e7ad-459c-967c-c40453526294",
+  "created_at": 1785608016.8649352,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_nodp/nodp_control/m=50/nodp/m=50/seed=42",
+  "group_key": "_femnist_nodp/nodp_control/m=50",
+  "is_aggregate": false,
+  "seed": 42
+ },
+ {
+  "id": "f7278622-298e-4ff8-bf62-d166e5a14ac6",
+  "created_at": 1785608016.8047123,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_bracket/clip_bracket/clip=0.0625/summary",
+  "group_key": "_femnist_bracket/clip_bracket/clip=0.0625",
+  "is_aggregate": true,
+  "seed": null
+ },
+ {
+  "id": "636a874e-d00b-456d-bc76-f3746f4646d4",
+  "created_at": 1785608016.7772894,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_bracket/clip_bracket/clip=0.0625/bracket/S=0.0625/seed=44",
+  "group_key": "_femnist_bracket/clip_bracket/clip=0.0625",
+  "is_aggregate": false,
+  "seed": 44
+ },
+ {
+  "id": "86f9a86d-17e4-4570-8ec9-c57af9c4b6f0",
+  "created_at": 1785608016.7497017,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_bracket/clip_bracket/clip=0.0625/bracket/S=0.0625/seed=43",
+  "group_key": "_femnist_bracket/clip_bracket/clip=0.0625",
+  "is_aggregate": false,
+  "seed": 43
+ },
+ {
+  "id": "3c035988-34e8-451d-817d-3c0bdf01bba2",
+  "created_at": 1785608016.722895,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_bracket/clip_bracket/clip=0.0625/bracket/S=0.0625/seed=42",
+  "group_key": "_femnist_bracket/clip_bracket/clip=0.0625",
+  "is_aggregate": false,
+  "seed": 42
+ },
+ {
+  "id": "9328b438-85c1-4b31-a1ba-98d6457c6f38",
+  "created_at": 1785608016.7213378,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_bracket/clip_bracket/clip=0.125/summary",
+  "group_key": "_femnist_bracket/clip_bracket/clip=0.125",
+  "is_aggregate": true,
+  "seed": null
+ },
+ {
+  "id": "c928aefd-ce8f-467f-aed0-f6d57d53ca75",
+  "created_at": 1785608016.6949155,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_bracket/clip_bracket/clip=0.125/bracket/S=0.125/seed=44",
+  "group_key": "_femnist_bracket/clip_bracket/clip=0.125",
+  "is_aggregate": false,
+  "seed": 44
+ },
+ {
+  "id": "85f5a85a-e85f-47af-82d8-5a0fd129a817",
+  "created_at": 1785608016.6749444,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_bracket/clip_bracket/clip=0.125/bracket/S=0.125/seed=43",
+  "group_key": "_femnist_bracket/clip_bracket/clip=0.125",
+  "is_aggregate": false,
+  "seed": 43
+ },
+ {
+  "id": "17120a54-5d96-4386-a5c8-4a14be04c7c2",
+  "created_at": 1785608016.6554756,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_bracket/clip_bracket/clip=0.125/bracket/S=0.125/seed=42",
+  "group_key": "_femnist_bracket/clip_bracket/clip=0.125",
+  "is_aggregate": false,
+  "seed": 42
+ },
+ {
+  "id": "a1d2da87-749f-40af-8cc9-c72ec657e286",
+  "created_at": 1785608016.6543412,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_bracket/clip_bracket/clip=0.25/summary",
+  "group_key": "_femnist_bracket/clip_bracket/clip=0.25",
+  "is_aggregate": true,
+  "seed": null
+ },
+ {
+  "id": "b0c08512-9f71-4aa5-aa6c-3c828abdeee1",
+  "created_at": 1785608016.6337385,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_bracket/clip_bracket/clip=0.25/bracket/S=0.25/seed=44",
+  "group_key": "_femnist_bracket/clip_bracket/clip=0.25",
+  "is_aggregate": false,
+  "seed": 44
+ },
+ {
+  "id": "3f9c7d16-2654-4083-a234-247d6f608cc9",
+  "created_at": 1785608016.609248,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_bracket/clip_bracket/clip=0.25/bracket/S=0.25/seed=43",
+  "group_key": "_femnist_bracket/clip_bracket/clip=0.25",
+  "is_aggregate": false,
+  "seed": 43
+ },
+ {
+  "id": "70063573-93e0-48dd-b920-ed39ad6a4d01",
+  "created_at": 1785608016.587197,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_bracket/clip_bracket/clip=0.25/bracket/S=0.25/seed=42",
+  "group_key": "_femnist_bracket/clip_bracket/clip=0.25",
+  "is_aggregate": false,
+  "seed": 42
+ },
+ {
+  "id": "80fbd2e6-d203-4e60-9ee6-34d96e44f09b",
+  "created_at": 1785608016.5859165,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_bracket/clip_bracket/clip=0.5/summary",
+  "group_key": "_femnist_bracket/clip_bracket/clip=0.5",
+  "is_aggregate": true,
+  "seed": null
+ },
+ {
+  "id": "3439d99e-3af8-4845-aa3f-f69094e63949",
+  "created_at": 1785608016.5651772,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_bracket/clip_bracket/clip=0.5/bracket/S=0.5/seed=44",
+  "group_key": "_femnist_bracket/clip_bracket/clip=0.5",
+  "is_aggregate": false,
+  "seed": 44
+ },
+ {
+  "id": "33593b59-400b-4262-9478-e70ba4443ba0",
+  "created_at": 1785608016.5423913,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_bracket/clip_bracket/clip=0.5/bracket/S=0.5/seed=43",
+  "group_key": "_femnist_bracket/clip_bracket/clip=0.5",
+  "is_aggregate": false,
+  "seed": 43
+ },
+ {
+  "id": "1706f19a-61d5-49b9-99d2-600b52d711af",
+  "created_at": 1785608016.5206406,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_bracket/clip_bracket/clip=0.5/bracket/S=0.5/seed=42",
+  "group_key": "_femnist_bracket/clip_bracket/clip=0.5",
+  "is_aggregate": false,
+  "seed": 42
+ },
+ {
+  "id": "e9ebe78b-2e47-40d8-9bda-8c8ce6cb39f2",
+  "created_at": 1785608016.5194886,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_bracket/clip_bracket/clip=1.0/summary",
+  "group_key": "_femnist_bracket/clip_bracket/clip=1.0",
+  "is_aggregate": true,
+  "seed": null
+ },
+ {
+  "id": "2069e1a9-135e-4c77-be78-6c7f18407fa0",
+  "created_at": 1785608016.4952312,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_bracket/clip_bracket/clip=1.0/bracket/S=1.0/seed=44",
+  "group_key": "_femnist_bracket/clip_bracket/clip=1.0",
+  "is_aggregate": false,
+  "seed": 44
+ },
+ {
+  "id": "470d47da-49f8-470a-8ef6-bad93899fa82",
+  "created_at": 1785608016.4730885,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_bracket/clip_bracket/clip=1.0/bracket/S=1.0/seed=43",
+  "group_key": "_femnist_bracket/clip_bracket/clip=1.0",
+  "is_aggregate": false,
+  "seed": 43
+ },
+ {
+  "id": "b4aae33a-10c7-43c2-afdb-1d25d992d4e0",
+  "created_at": 1785608016.4510272,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_bracket/clip_bracket/clip=1.0/bracket/S=1.0/seed=42",
+  "group_key": "_femnist_bracket/clip_bracket/clip=1.0",
+  "is_aggregate": false,
+  "seed": 42
+ },
+ {
+  "id": "34b0c37c-f608-4709-af42-994dea7c6049",
+  "created_at": 1785608016.433554,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_baseline/baseline/seed=44",
+  "group_key": "_femnist_baseline/baseline",
+  "is_aggregate": false,
+  "seed": 44
+ },
+ {
+  "id": "5eb8d751-8c54-416b-a6f6-cbc012a0c0a5",
+  "created_at": 1785608016.4244666,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_baseline/baseline/seed=43",
+  "group_key": "_femnist_baseline/baseline",
+  "is_aggregate": false,
+  "seed": 43
+ },
+ {
+  "id": "bc5560f7-a1f6-4d01-a6a9-a30daba0a0ac",
+  "created_at": 1785608016.4164984,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_baseline/baseline/seed=42",
+  "group_key": "_femnist_baseline/baseline",
+  "is_aggregate": false,
+  "seed": 42
+ },
+ {
+  "id": "5abe5e7f-d6f6-4135-9c5d-31bc0e3b3cba",
+  "created_at": 1785608016.4144459,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_baseline/baseline/summary",
+  "group_key": "_femnist_baseline/baseline",
+  "is_aggregate": true,
+  "seed": null
+ },
+ {
+  "id": "f81ec99f-d292-48d6-bd30-f309fd46b680",
+  "created_at": 1785608016.4124444,
+  "status": "completed",
+  "source": "imported",
+  "label": "_femnist_baseline/baseline/run",
+  "group_key": "_femnist_baseline/baseline",
+  "is_aggregate": false,
+  "seed": 42
+ },
+ {
+  "id": "42204eff-01b4-4bce-98b4-17dcc1217cbe",
+  "created_at": 1785608016.3434849,
+  "status": "completed",
+  "source": "imported",
+  "label": "_cohort_sweep/cohort_sweep/cohort-sweep/m=200",
+  "group_key": "_cohort_sweep/cohort_sweep",
+  "is_aggregate": false,
+  "seed": null
+ },
+ {
+  "id": "37fa5399-99fa-47ed-bf1d-a5a5f7d77ad3",
+  "created_at": 1785608016.320515,
+  "status": "completed",
+  "source": "imported",
+  "label": "_cohort_sweep/cohort_sweep/cohort-sweep/m=100",
+  "group_key": "_cohort_sweep/cohort_sweep",
+  "is_aggregate": false,
+  "seed": null
+ },
+ {
+  "id": "c2fd936a-81ca-48cc-bd54-6a7a1d95fbba",
+  "created_at": 1785608016.2968867,
+  "status": "completed",
+  "source": "imported",
+  "label": "_cohort_sweep/cohort_sweep/cohort-sweep/m=50",
+  "group_key": "_cohort_sweep/cohort_sweep",
+  "is_aggregate": false,
+  "seed": null
+ },
+ {
+  "id": "69cda547-18bb-47ff-835b-f9082a9d3320",
+  "created_at": 1785608016.270888,
+  "status": "completed",
+  "source": "imported",
+  "label": "_cohort_sweep/cohort_sweep/cohort-sweep/m=20",
+  "group_key": "_cohort_sweep/cohort_sweep",
+  "is_aggregate": false,
+  "seed": null
+ },
+ {
+  "id": "6fc6dc5c-8f8a-4df0-b96c-a1a4f4b16dd8",
+  "created_at": 1785608016.2444875,
+  "status": "completed",
+  "source": "imported",
+  "label": "_cohort_sweep/cohort_sweep/cohort-sweep/m=5",
+  "group_key": "_cohort_sweep/cohort_sweep",
+  "is_aggregate": false,
+  "seed": null
+ },
+ {
+  "id": "935150cf-14d2-4e49-9da9-0beee6a3d802",
+  "created_at": 1785608016.2006524,
+  "status": "completed",
+  "source": "imported",
+  "label": "_cohort_baseline/cohort_baseline/baseline/m=200",
+  "group_key": "_cohort_baseline/cohort_baseline",
+  "is_aggregate": false,
+  "seed": null
+ },
+ {
+  "id": "c45843a2-b49d-4f06-a663-ca2e2ddb4a80",
+  "created_at": 1785608016.1782317,
+  "status": "completed",
+  "source": "imported",
+  "label": "_cohort_baseline/cohort_baseline/baseline/m=100",
+  "group_key": "_cohort_baseline/cohort_baseline",
+  "is_aggregate": false,
+  "seed": null
+ },
+ {
+  "id": "f6117504-6f68-45cd-ac10-ec2fccb035bb",
+  "created_at": 1785608016.1526072,
+  "status": "completed",
+  "source": "imported",
+  "label": "_cohort_baseline/cohort_baseline/baseline/m=50",
+  "group_key": "_cohort_baseline/cohort_baseline",
+  "is_aggregate": false,
+  "seed": null
+ },
+ {
+  "id": "c5a4aace-8d06-465b-b944-fe254593fa75",
+  "created_at": 1785608016.1127682,
+  "status": "completed",
+  "source": "imported",
+  "label": "_cohort_baseline/cohort_baseline/baseline/m=20",
+  "group_key": "_cohort_baseline/cohort_baseline",
+  "is_aggregate": false,
+  "seed": null
+ },
+ {
+  "id": "4f6db0bf-e1c4-404d-8662-0959a4e38ab3",
+  "created_at": 1785608016.0800707,
+  "status": "completed",
+  "source": "imported",
+  "label": "_cohort_baseline/cohort_baseline/baseline/m=5",
+  "group_key": "_cohort_baseline/cohort_baseline",
+  "is_aggregate": false,
+  "seed": null
+ },
+ {
+  "id": "930f286e-aca2-4bde-94c4-d8065ded274e",
+  "created_at": 1785608015.8703666,
+  "status": "completed",
+  "source": "imported",
+  "label": "_ablation/ablation/ablation-c/both",
+  "group_key": "_ablation/ablation",
+  "is_aggregate": false,
+  "seed": null
+ },
+ {
+  "id": "e705f19d-d027-40b5-a8b3-904737d23564",
+  "created_at": 1785608015.8423748,
+  "status": "completed",
+  "source": "imported",
+  "label": "_ablation/ablation/ablation-b/noise-only",
+  "group_key": "_ablation/ablation",
+  "is_aggregate": false,
+  "seed": null
+ },
+ {
+  "id": "c90ebe99-7e52-4b31-8ead-7d5df67e1032",
+  "created_at": 1785608015.8146646,
+  "status": "completed",
+  "source": "imported",
+  "label": "_ablation/ablation/ablation-a/clip-only",
+  "group_key": "_ablation/ablation",
+  "is_aggregate": false,
+  "seed": null
+ },
+ {
+  "id": "3a273b2d-401d-4f4b-bac5-92a09189dde4",
+  "created_at": 1785608015.7542274,
+  "status": "completed",
+  "source": "imported",
+  "label": "grpc/pure_44",
+  "group_key": null,
+  "is_aggregate": false,
+  "seed": 44
+ },
+ {
+  "id": "3c52e9e2-0e1d-4da9-918b-91f2acb150f3",
+  "created_at": 1785608015.7173803,
+  "status": "completed",
+  "source": "imported",
+  "label": "grpc/pure_43",
+  "group_key": null,
+  "is_aggregate": false,
+  "seed": 43
+ },
+ {
+  "id": "e7463a01-3ba0-4537-93c5-9348641f7cd5",
+  "created_at": 1785608015.677879,
+  "status": "completed",
+  "source": "imported",
+  "label": "grpc/pure_42",
+  "group_key": null,
+  "is_aggregate": false,
+  "seed": 42
+ },
+ {
+  "id": "7aedb61d-520f-462b-ae9a-aee18a8cab4b",
+  "created_at": 1785608015.6167812,
+  "status": "completed",
+  "source": "imported",
+  "label": "grpc/mixed_44",
+  "group_key": null,
+  "is_aggregate": false,
+  "seed": 44
+ },
+ {
+  "id": "4b21924b-e7d0-4c1b-8478-2e9961b36180",
+  "created_at": 1785608015.581533,
+  "status": "completed",
+  "source": "imported",
+  "label": "grpc/mixed_43",
+  "group_key": null,
+  "is_aggregate": false,
+  "seed": 43
+ },
+ {
+  "id": "f9ad0bd9-9bb6-4192-900b-70c6331bb901",
+  "created_at": 1785608015.5465016,
+  "status": "completed",
+  "source": "imported",
+  "label": "grpc/mixed_42",
+  "group_key": null,
+  "is_aggregate": false,
+  "seed": 42
+ },
+ {
+  "id": "38dd9b44-aa9b-43b6-894c-ff84afdb50cd",
+  "created_at": 1785608015.4594555,
+  "status": "completed",
+  "source": "imported",
+  "label": "grpc/no_dp",
+  "group_key": null,
+  "is_aggregate": false,
+  "seed": 42
+ },
+ {
+  "id": "53f65391-94ef-46e5-8080-38c4270eaa9e",
+  "created_at": 1785608015.4063532,
+  "status": "completed",
+  "source": "imported",
+  "label": "grpc/dp_moderate",
+  "group_key": null,
+  "is_aggregate": false,
+  "seed": 42
+ },
+ {
+  "id": "424d5bf4-7009-4726-ac8a-e644297672f7",
+  "created_at": 1785608015.3470073,
+  "status": "completed",
+  "source": "imported",
+  "label": "grpc/dp_high",
+  "group_key": null,
+  "is_aggregate": false,
+  "seed": 42
+ }
+]

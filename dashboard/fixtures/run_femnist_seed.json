@@ -1,0 +1,29 @@
+{
+ "id": "7af3e3ce-c41f-4342-8d27-3bd9df97894f",
+ "created_at": 1785608017.210364,
+ "status": "completed",
+ "source": "imported",
+ "label": "_femnist_sweep/sweep/m=50/sweep/m=50/seed=42",
+ "group_key": "_femnist_sweep/sweep/m=50",
+ "is_aggregate": false,
+ "seed": 42,
+ "config": {
+  "seed": 42,
+  "dataset": "femnist",
+  "num_clients": 1000,
+  "clients_per_round": 50,
+  "rounds": 20,
+  "dp": true,
+  "noise_multiplier": 0.6722879948616026,
+  "l2_clip_norm": 0.5,
+  "epsilon": 6.227713059437652,
+  "imported_reduced_config": true
+ },
+ "final_metrics": {
+  "final_accuracy": 0.05305004492402077,
+  "best_accuracy": 0.10477494448423386,
+  "rounds_completed": 20,
+  "epsilon": 6.227713059437652
+ },
+ "num_events": 42
+}
