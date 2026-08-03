@@ -307,6 +307,7 @@ def exp_nodp_control(
     seeds: tuple[int, ...],
     rounds: int,
     cohorts: tuple[int, ...],
+    local_epochs: int = 1,
 ) -> dict:
     """Federated no-DP control at selected cohort sizes.
 
@@ -328,8 +329,9 @@ def exp_nodp_control(
                 clients_per_round=m,
                 rounds=rounds,
                 dp=False,
+                local_epochs=local_epochs,
                 seed=seed,
-                label=f"nodp/m={m}/seed={seed}",
+                label=f"nodp/m={m}/E={local_epochs}/seed={seed}",
             )
             for seed in seeds
         ]
@@ -342,6 +344,50 @@ def exp_nodp_control(
         )
         cells.append({"m": m, "summary": summary, "runs": runs})
     return {"writers": writers, "rounds": rounds, "cells": cells}
+
+
+def exp_budget(
+    writers: int,
+    seeds: tuple[int, ...],
+    m: int,
+    epochs_list: tuple[int, ...],
+    rounds: int,
+) -> dict:
+    """Optimisation-budget search at a fixed cohort, no DP.
+
+    The decoupled sweep found every cell optimiser-limited at the
+    Fashion-matched budget (20 rounds x 1 local epoch): no-DP FedAvg itself
+    stalls at 5-8%. Before any conclusion about cohort size is worth drawing,
+    FedAvg has to actually train. Local epochs are the cheapest knob -- more
+    gradient steps per client per round, zero extra communication.
+    """
+    train, test, shards = load_femnist(num_clients=writers, seed=seeds[0])
+    cells = []
+    for epochs in epochs_list:
+        runs = [
+            simulate(
+                train=train,
+                test=test,
+                shards=shards,
+                clients_per_round=m,
+                rounds=rounds,
+                dp=False,
+                local_epochs=epochs,
+                seed=seed,
+                label=f"budget/E={epochs}/seed={seed}",
+            )
+            for seed in seeds
+        ]
+        summary = _summary(runs)
+        LOGGER.info(
+            "BUDGET E=%d DONE: mean_final=%.4f range=%.4f mean_round_s=%.1f",
+            epochs,
+            summary["mean_final"],
+            summary["range_final"],
+            summary["mean_round_seconds"],
+        )
+        cells.append({"local_epochs": epochs, "summary": summary, "runs": runs})
+    return {"writers": writers, "m": m, "rounds": rounds, "cells": cells}
 
 
 def exp_sweep(
@@ -464,7 +510,7 @@ def exp_clip_bracket(
     }
 
 
-EXPERIMENTS = ("entropy", "baseline", "sweep", "nodp_control", "clip_bracket")
+EXPERIMENTS = ("entropy", "baseline", "sweep", "nodp_control", "clip_bracket", "budget")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -480,6 +526,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--cohorts", default="50,500", help="cohort sizes for nodp_control (comma-separated)"
     )
+    parser.add_argument(
+        "--epochs-list", default="1,5,10", help="local-epoch values for budget (comma-separated)"
+    )
+    parser.add_argument("--local-epochs", type=int, default=1, help="local epochs for nodp_control")
     parser.add_argument("--epochs", type=int, default=5, help="baseline epochs")
     parser.add_argument("--out", default=None)
     parser.add_argument("--log-level", default="INFO")
@@ -496,7 +546,10 @@ def main(argv: list[str] | None = None) -> int:
         result = exp_sweep(args.writers, seeds, args.target_epsilon, args.clip, args.rounds)
     elif args.experiment == "nodp_control":
         cohorts = tuple(int(c) for c in args.cohorts.split(","))
-        result = exp_nodp_control(args.writers, seeds, args.rounds, cohorts)
+        result = exp_nodp_control(args.writers, seeds, args.rounds, cohorts, args.local_epochs)
+    elif args.experiment == "budget":
+        epochs_list = tuple(int(e) for e in args.epochs_list.split(","))
+        result = exp_budget(args.writers, seeds, args.m or 200, epochs_list, args.rounds)
     else:
         if args.m is None:
             parser.error("--m is required for clip_bracket")

@@ -476,6 +476,16 @@ client registration order over real gRPC is timing-dependent). Verified end to
 end from a fresh clone twice — 77.34 % and 79.34 %; the server writes
 `/app/results/docker_run.json` and every container exits 0.
 
+> **Why the demo says ~78 % while the results table says ~87 %.** Same code
+> path, different budget, on purpose. The demo config runs **5 rounds with 5
+> clients** so a reviewer sees a complete federated run in a few minutes; the
+> recorded experiment config (`configs/default.yaml`) runs **20 rounds with 10
+> clients** and reaches 86.9 %. Run the experiment config for the README
+> numbers: `./run_local.sh configs/default.yaml 10` (or the compose file with
+> `configs/docker.yaml` edited to `rounds: 20`, at ~4× the demo's runtime).
+> Neither number is wrong; they answer different questions — "does the system
+> work end to end" versus "what does this configuration achieve".
+
 Clients take no `--cid`. A client registering without an id is assigned the next
 free shard, so N replicas claim N distinct shards with no per-replica config —
 that is what makes `--scale` work. `configs/docker.yaml` declares
