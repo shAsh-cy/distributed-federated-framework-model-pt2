@@ -11,17 +11,44 @@ import pytest
 
 from fl.secure_aggregation import (
     FRACTIONAL_BITS,
+    KEY_SEED,
     MODP_GENERATOR,
     MODP_PRIME,
+    SELF_MASK,
     SHAMIR_PRIME,
+    InsufficientSharesError,
+    SecureAggregationError,
+    SecureClient,
+    SecureServer,
     expand_mask,
     fixed_point_decode,
     fixed_point_encode,
     generate_keypair,
+    run_secure_round,
     shamir_reconstruct,
     shamir_split,
     shared_secret,
 )
+
+
+def _updates(n: int, size: int = 32, seed: int = 7) -> list[tuple[str, np.ndarray, float]]:
+    rng = np.random.default_rng(seed)
+    return [
+        (f"c{i}", rng.normal(scale=0.5, size=size).astype(np.float32), float(10 + 7 * i))
+        for i in range(n)
+    ]
+
+
+def _quantised_weighted_mean(updates: list[tuple[str, np.ndarray, float]]) -> np.ndarray:
+    """The same arithmetic with no masks anywhere: the ground truth the
+    protocol must reproduce BIT-EXACTLY."""
+    length = updates[0][1].size + 1
+    total = np.zeros(length, dtype=np.uint64)
+    for _, values, weight in updates:
+        payload = np.concatenate([values.astype(np.float64).ravel() * weight, [float(weight)]])
+        total += fixed_point_encode(payload)
+    decoded = fixed_point_decode(total)
+    return decoded[:-1] / decoded[-1]
 
 
 def _is_probable_prime(n: int, rounds: int = 20) -> bool:
@@ -147,3 +174,124 @@ class TestFixedPointAndMasks:
     def test_bad_mask_seed_rejected(self):
         with pytest.raises(ValueError, match="32 bytes"):
             expand_mask(b"tiny", 4)
+
+
+class TestFullRound:
+    def test_unmasked_sum_equals_plain_sum_exactly(self):
+        """The headline property: with every mask applied and removed, the
+        aggregate is bit-identical to the maskless quantised computation, and
+        within quantisation error of the float weighted mean."""
+        updates = _updates(5)
+        result, report = run_secure_round(updates, threshold=3)
+        np.testing.assert_array_equal(result, _quantised_weighted_mean(updates))
+        weights = np.array([w for _, _, w in updates])
+        stacked = np.stack([v.astype(np.float64) for _, v, _ in updates])
+        float_mean = (weights[:, None] * stacked).sum(axis=0) / weights.sum()
+        np.testing.assert_allclose(result, float_mean, atol=1e-5)
+        assert report["dropped"] == []
+        assert report["weight_sum"] == pytest.approx(weights.sum())
+
+    def test_server_never_observes_a_plaintext_update(self):
+        """What the server holds is uniformly masked: no submission equals the
+        plaintext encoding, and even with the self mask stripped (which the
+        server CAN do after reveals) the pairwise masks still cover it."""
+        updates = _updates(4)
+        clients = {cid: SecureClient(cid, order) for order, (cid, _, _) in enumerate(updates)}
+        server = SecureServer(threshold=3)
+        for client in clients.values():
+            server.register(client)
+        server.broadcast_roster(clients)
+        server.route_shares(clients)
+        for cid, values, weight in updates:
+            server.submit(cid, clients[cid].masked_update(values, weight))
+        for cid, values, weight in updates:
+            payload = np.concatenate(
+                [values.astype(np.float64).ravel() * weight, [float(weight)]]
+            )
+            plaintext = fixed_point_encode(payload)
+            observed = server.submissions[cid]
+            assert not np.array_equal(observed, plaintext)
+            self_stripped = observed - expand_mask(clients[cid]._self_mask_seed, observed.size)
+            assert not np.array_equal(self_stripped, plaintext)
+
+    def test_mid_round_dropout_recovers_the_survivor_sum_exactly(self):
+        updates = _updates(5)
+        result, report = run_secure_round(updates, threshold=3, drop_before_submit={"c2"})
+        survivors = [u for u in updates if u[0] != "c2"]
+        np.testing.assert_array_equal(result, _quantised_weighted_mean(survivors))
+        assert report["dropped"] == ["c2"]
+
+    def test_second_dropout_during_recovery_still_recovers(self):
+        """c0 vanishes before submitting; c1 submits, then vanishes during
+        recovery. Four responders remain against a threshold of three, so the
+        sum over the five SUBMITTED clients is still exact."""
+        updates = _updates(6)
+        result, report = run_secure_round(
+            updates,
+            threshold=3,
+            drop_before_submit={"c0"},
+            drop_during_recovery={"c1"},
+        )
+        submitted = [u for u in updates if u[0] != "c0"]
+        np.testing.assert_array_equal(result, _quantised_weighted_mean(submitted))
+        assert report["dropped"] == ["c0"]
+        assert "c1" in report["survivors"]
+        assert "c1" not in report["responders"]
+
+    def test_dropout_below_threshold_is_an_explicit_abort(self):
+        updates = _updates(4)
+        with pytest.raises(InsufficientSharesError, match="threshold"):
+            run_secure_round(updates, threshold=4, drop_during_recovery={"c3"})
+
+    def test_client_refuses_to_reveal_both_secrets(self):
+        """The either-or rule that keeps a submitted-then-dropped client's
+        update hidden: one holder will never hand the server both the self
+        mask and the key seed of the same owner."""
+        updates = _updates(3)
+        clients = {cid: SecureClient(cid, order) for order, (cid, _, _) in enumerate(updates)}
+        server = SecureServer(threshold=2)
+        for client in clients.values():
+            server.register(client)
+        server.broadcast_roster(clients)
+        server.route_shares(clients)
+        holder = clients["c0"]
+        holder.reveal("c1", SELF_MASK)
+        with pytest.raises(SecureAggregationError, match="both secrets"):
+            holder.reveal("c1", KEY_SEED)
+
+    def test_reconstructed_key_must_match_the_roster(self):
+        """Integrity check on recovery: if the shares reconstruct a key that
+        does not match the dropped client's registered public key, the round
+        aborts instead of subtracting garbage masks."""
+        updates = _updates(4)
+        clients = {cid: SecureClient(cid, order) for order, (cid, _, _) in enumerate(updates)}
+        server = SecureServer(threshold=2)
+        for client in clients.values():
+            server.register(client)
+        server.broadcast_roster(clients)
+        server.route_shares(clients)
+        for cid, values, weight in updates:
+            if cid == "c1":
+                continue
+            server.submit(cid, clients[cid].masked_update(values, weight))
+        order, _ = server.roster["c1"]
+        server.roster["c1"] = (order, MODP_GENERATOR)  # tampered registration
+        with pytest.raises(SecureAggregationError, match="roster"):
+            server.unmask(clients, {"c0", "c2", "c3"})
+
+    def test_driver_input_validation(self):
+        updates = _updates(3)
+        with pytest.raises(ValueError, match="duplicate"):
+            run_secure_round([updates[0], updates[0], updates[2]], threshold=2)
+        with pytest.raises(ValueError, match="unknown"):
+            run_secure_round(updates, threshold=2, drop_before_submit={"ghost"})
+        with pytest.raises(ValueError, match="cannot drop both"):
+            run_secure_round(
+                updates, threshold=2, drop_before_submit={"c0"}, drop_during_recovery={"c0"}
+            )
+        with pytest.raises(ValueError, match="at least 1"):
+            SecureServer(threshold=0)
+        with pytest.raises(SecureAggregationError, match="never registered"):
+            SecureServer(threshold=1).submit("c9", np.zeros(3, dtype=np.uint64))
+        with pytest.raises(ValueError, match="positive"):
+            SecureClient("c0", 0).masked_update(np.zeros(3, dtype=np.float32), 0.0)

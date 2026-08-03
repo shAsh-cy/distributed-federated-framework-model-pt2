@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import hashlib
 import secrets
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -175,3 +176,267 @@ def expand_mask(seed: bytes, length: int) -> np.ndarray:
         raise ValueError(f"mask seed must be {SEED_BYTES} bytes, got {len(seed)}")
     rng = np.random.Generator(np.random.PCG64(np.random.SeedSequence(int.from_bytes(seed, "big"))))
     return rng.integers(0, 2**64, size=length, dtype=np.uint64)
+
+
+# ---------------------------------------------------------------------------
+# Protocol
+# ---------------------------------------------------------------------------
+
+# Wire-size accounting, used by the message log and the cost model alike.
+PUBLIC_KEY_BYTES = 256  # a 2048-bit group element
+SHARE_BYTES = 68  # 66-byte field element plus 2-byte index
+WORD_BYTES = 8  # masked vectors are uint64 per element
+
+SELF_MASK = "self_mask"
+KEY_SEED = "key_seed"
+
+
+@dataclass(frozen=True)
+class Share:
+    """One Shamir share of one client secret, held by one other client."""
+
+    owner: str
+    kind: str  # SELF_MASK or KEY_SEED
+    index: int
+    value: int
+
+
+class SecureClient:
+    """One protocol participant. Holds its own secrets and everyone's shares.
+
+    ``order`` is the client's position in the round's total ordering; it fixes
+    the sign convention for pairwise masks (the lower order adds, the higher
+    subtracts) so each pair's masks cancel in the sum.
+    """
+
+    def __init__(self, client_id: str, order: int, seed: bytes | None = None) -> None:
+        self.client_id = client_id
+        self.order = order
+        root = seed if seed is not None else secrets.token_bytes(SEED_BYTES)
+        self._key_seed = hashlib.sha256(b"secagg-key-seed|" + root).digest()
+        self._self_mask_seed = hashlib.sha256(b"secagg-self-mask|" + root).digest()
+        self._private, self.public_key = generate_keypair(self._key_seed)
+        self._peers: dict[str, tuple[int, int]] = {}
+        self._held_shares: dict[tuple[str, str], Share] = {}
+        self._revealed: dict[str, str] = {}
+
+    def receive_roster(self, roster: dict[str, tuple[int, int]]) -> None:
+        """Learn every participant's (order, public key) from the server."""
+        self._peers = {cid: entry for cid, entry in roster.items() if cid != self.client_id}
+
+    def make_shares(
+        self, roster: dict[str, tuple[int, int]], threshold: int
+    ) -> dict[str, list[Share]]:
+        """Shamir-share BOTH secrets among all participants (self included).
+
+        Share x-coordinates are ``order + 1`` so every holder contributes a
+        distinct point regardless of which secret is being reconstructed.
+        """
+        recipients = sorted(roster, key=lambda cid: roster[cid][0])
+        n = len(recipients)
+        out: dict[str, list[Share]] = {cid: [] for cid in recipients}
+        for kind, secret in ((SELF_MASK, self._self_mask_seed), (KEY_SEED, self._key_seed)):
+            points = shamir_split(secret, num_shares=n, threshold=threshold)
+            for cid, (x, y) in zip(recipients, points, strict=True):
+                if x != roster[cid][0] + 1:
+                    raise SecureAggregationError("roster orders are not contiguous from zero")
+                out[cid].append(Share(self.client_id, kind, x, y))
+        return out
+
+    def receive_shares(self, shares: list[Share]) -> None:
+        for share in shares:
+            self._held_shares[(share.owner, share.kind)] = share
+
+    def _pair_mask_seed(self, other_id: str) -> bytes:
+        _, other_public = self._peers[other_id]
+        return hashlib.sha256(b"secagg-mask|" + shared_secret(self._private, other_public)).digest()
+
+    def masked_update(self, values: np.ndarray, weight: float) -> np.ndarray:
+        """The client's whole submission: fixed-point(update * weight, weight)
+        plus the self mask plus every pairwise mask. The weight rides inside
+        the masked vector, so the server does not even learn per-client
+        example counts — only their sum."""
+        if weight <= 0:
+            raise ValueError("weight must be positive")
+        payload = np.concatenate(
+            [np.asarray(values, dtype=np.float64).ravel() * weight, [float(weight)]]
+        )
+        words = fixed_point_encode(payload)
+        words = words + expand_mask(self._self_mask_seed, words.size)
+        for other_id, (other_order, _) in self._peers.items():
+            mask = expand_mask(self._pair_mask_seed(other_id), words.size)
+            words = words + mask if self.order < other_order else words - mask
+        return words
+
+    def reveal(self, owner: str, kind: str) -> Share:
+        """Reveal the held share of ``owner``'s ``kind`` secret.
+
+        The protocol's crucial rule is enforced here: for any one owner a
+        client reveals EITHER the self-mask seed (owner survived) OR the key
+        seed (owner dropped), never both — the pair would let the server
+        unmask that owner's individual submission.
+        """
+        already = self._revealed.get(owner)
+        if already is not None and already != kind:
+            raise SecureAggregationError(
+                f"refusing to reveal both secrets of '{owner}': together they "
+                f"would unmask an individual update"
+            )
+        share = self._held_shares.get((owner, kind))
+        if share is None:
+            raise SecureAggregationError(f"holding no {kind} share of '{owner}'")
+        self._revealed[owner] = kind
+        return share
+
+
+class SecureServer:
+    """The honest-but-curious aggregator: routes, sums, and unmasks the sum.
+
+    Everything it observes goes through :attr:`message_log`, which is what the
+    privacy tests interrogate: masked submissions, public keys, and revealed
+    shares — never a plaintext update, never both secrets of one client.
+    """
+
+    def __init__(self, threshold: int) -> None:
+        if threshold < 1:
+            raise ValueError("threshold must be at least 1")
+        self.threshold = threshold
+        self.roster: dict[str, tuple[int, int]] = {}
+        self.submissions: dict[str, np.ndarray] = {}
+        self.message_log: list[dict] = []
+
+    def _log(self, sender: str, receiver: str, kind: str, nbytes: int) -> None:
+        self.message_log.append(
+            {"sender": sender, "receiver": receiver, "kind": kind, "bytes": int(nbytes)}
+        )
+
+    def register(self, client: SecureClient) -> None:
+        self.roster[client.client_id] = (client.order, client.public_key)
+        self._log(client.client_id, "server", "public_key", PUBLIC_KEY_BYTES)
+
+    def broadcast_roster(self, clients: dict[str, SecureClient]) -> None:
+        entry_bytes = PUBLIC_KEY_BYTES + 8
+        for client in clients.values():
+            client.receive_roster(self.roster)
+            self._log("server", client.client_id, "roster", entry_bytes * len(self.roster))
+
+    def route_shares(self, clients: dict[str, SecureClient]) -> None:
+        """Move each client's shares to their holders. The honest server
+        routes without reading; nothing but the docstring enforces that,
+        which is one reason this is a teaching implementation."""
+        for client in clients.values():
+            per_recipient = client.make_shares(self.roster, self.threshold)
+            for recipient_id, shares in per_recipient.items():
+                self._log(client.client_id, recipient_id, "shares", SHARE_BYTES * len(shares))
+                clients[recipient_id].receive_shares(shares)
+
+    def submit(self, client_id: str, words: np.ndarray) -> None:
+        if client_id not in self.roster:
+            raise SecureAggregationError(f"'{client_id}' never registered")
+        self.submissions[client_id] = words
+        self._log(client_id, "server", "masked_update", words.size * WORD_BYTES)
+
+    def unmask(
+        self, clients: dict[str, SecureClient], responders: set[str]
+    ) -> tuple[np.ndarray, dict]:
+        """Recover the sum: subtract survivors' self masks, cancel dropped
+        clients' pairwise masks, decode. ``responders`` are the survivors
+        still answering during recovery — a second dropout at this stage is
+        simply a survivor missing from this set."""
+        survivors = set(self.submissions)
+        dropped = set(self.roster) - survivors
+        needed = [(cid, SELF_MASK) for cid in sorted(survivors)] + [
+            (cid, KEY_SEED) for cid in sorted(dropped)
+        ]
+
+        collected: dict[tuple[str, str], list[tuple[int, int]]] = {key: [] for key in needed}
+        for responder_id in sorted(responders & survivors):
+            for owner, kind in needed:
+                share = clients[responder_id].reveal(owner, kind)
+                self._log(responder_id, "server", f"reveal_{kind}", SHARE_BYTES)
+                collected[(owner, kind)].append((share.index, share.value))
+
+        for (owner, kind), shares in collected.items():
+            if len(shares) < self.threshold:
+                raise InsufficientSharesError(
+                    f"{len(shares)} shares of {owner}/{kind} survive; "
+                    f"threshold is {self.threshold}"
+                )
+
+        sizes = {words.size for words in self.submissions.values()}
+        if len(sizes) != 1:
+            raise SecureAggregationError(f"submission lengths disagree: {sorted(sizes)}")
+        (length,) = sizes
+        total = np.zeros(length, dtype=np.uint64)
+        for words in self.submissions.values():
+            total += words
+
+        for cid in survivors:
+            seed = shamir_reconstruct(collected[(cid, SELF_MASK)][: self.threshold])
+            total -= expand_mask(seed, length)
+
+        for cid in dropped:
+            key_seed = shamir_reconstruct(collected[(cid, KEY_SEED)][: self.threshold])
+            private, public = generate_keypair(key_seed)
+            if public != self.roster[cid][1]:
+                raise SecureAggregationError(
+                    f"reconstructed key for '{cid}' does not match its roster entry"
+                )
+            dropped_order = self.roster[cid][0]
+            for survivor_id in survivors:
+                survivor_order, survivor_public = self.roster[survivor_id]
+                pair_secret = shared_secret(private, survivor_public)
+                mask = expand_mask(
+                    hashlib.sha256(b"secagg-mask|" + pair_secret).digest(), length
+                )
+                # Cancel the term the SURVIVOR added for this pair.
+                total = total - mask if survivor_order < dropped_order else total + mask
+
+        payload = fixed_point_decode(total)
+        weight_sum = payload[-1]
+        if weight_sum <= 0:
+            raise SecureAggregationError("aggregate weight is not positive")
+        report = {
+            "survivors": sorted(survivors),
+            "dropped": sorted(dropped),
+            "responders": sorted(responders & survivors),
+            "weight_sum": float(weight_sum),
+            "total_bytes": int(sum(m["bytes"] for m in self.message_log)),
+        }
+        return payload[:-1] / weight_sum, report
+
+
+def run_secure_round(
+    updates: list[tuple[str, np.ndarray, float]],
+    threshold: int,
+    drop_before_submit: set[str] | frozenset[str] = frozenset(),
+    drop_during_recovery: set[str] | frozenset[str] = frozenset(),
+) -> tuple[np.ndarray, dict]:
+    """One full round over in-memory clients: setup, masking, dropouts,
+    recovery. Returns the weighted mean of the SURVIVORS' updates and the
+    server's report. Clients in ``drop_before_submit`` complete setup but
+    never submit; clients in ``drop_during_recovery`` submit but go silent
+    before revealing any shares."""
+    ids = [cid for cid, _, _ in updates]
+    if len(set(ids)) != len(ids):
+        raise ValueError("duplicate client ids")
+    unknown = (set(drop_before_submit) | set(drop_during_recovery)) - set(ids)
+    if unknown:
+        raise ValueError(f"drop sets name unknown clients: {sorted(unknown)}")
+    if set(drop_before_submit) & set(drop_during_recovery):
+        raise ValueError("a client cannot drop both before submission and during recovery")
+
+    clients = {cid: SecureClient(cid, order) for order, cid in enumerate(ids)}
+    server = SecureServer(threshold)
+    for client in clients.values():
+        server.register(client)
+    server.broadcast_roster(clients)
+    server.route_shares(clients)
+
+    for cid, values, weight in updates:
+        if cid in drop_before_submit:
+            continue
+        server.submit(cid, clients[cid].masked_update(values, weight))
+
+    responders = set(ids) - set(drop_before_submit) - set(drop_during_recovery)
+    return server.unmask(clients, responders)
