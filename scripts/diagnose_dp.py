@@ -308,6 +308,7 @@ def simulate(
         "rounds": rounds,
         "dp": dp,
         "aggregator": getattr(aggregator, "name", "fedavg"),
+        "seed": seed,
         "noise_multiplier": noise_multiplier,
         "l2_clip_norm": l2_clip_norm,
         "server_lr": server_lr,
