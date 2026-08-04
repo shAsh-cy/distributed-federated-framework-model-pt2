@@ -497,6 +497,22 @@ E = 10 are an order of magnitude above the ones the recorded FEMNIST clip
 bracket was measured on. Full write-up:
 **[docs/femnist_budget.md](docs/femnist_budget.md)**.
 
+**DP reintroduced at the working budget — the number the FEMNIST chain was
+built to produce.** The clip re-bracketed exactly as predicted (the
+Fashion-era S = 0.5 binds every update and costs 12 pp; the begins-to-bind
+knee is S = 2.0), and with it, client-level DP at ε = 6.228 reaches
+**68.2 % (range 0.7 pp) against the 72.8 % no-DP control: DP costs
+4.6 pp** — beside Fashion-MNIST's ~3.5 pp, and against the 12.8 pp the
+federated setup itself costs relative to the pooled baseline. On both
+datasets, DP costs roughly a third of what federation does. The same batch
+measured quantile-adaptive clipping against the bracketed fixed clip,
+3 seeds per arm at identical ε: **a match on FEMNIST (68.3 % vs 68.2 %,
+inside seed ranges, no bracket needed), a trail on Fashion (70.1 % vs
+72.4 %)** — the estimator tracks the median faithfully, and on Fashion the
+tuned optimum is a *binding* clip below the median, so tracking the median
+is the wrong target there. Fixed clipping stays the default. Full
+write-up: **[docs/adaptive_clipping.md](docs/adaptive_clipping.md)**.
+
 ---
 
 ## Quickstart
@@ -661,17 +677,15 @@ Stated plainly, because each of these is a real boundary of what was built.
   mean or Krum), no client reputation, and no authentication: any process that can
   reach the port can register and contribute.
 
-- **The FEMNIST results are harness results, and the DP arm stops at the
-  stalled budget.** The dataset swaps by config alone and the gRPC path
-  accepts `configs/femnist.yaml`, but the recorded FEMNIST numbers come from
-  the in-process harness (`scripts/femnist_experiments.py`) — nobody has
-  started 1,000 client containers on one host. The decoupled DP sweep
-  measures the Fashion-matched budget (20 rounds, 1 local epoch), where
-  FedAvg itself is optimiser-limited; the follow-up re-asked the cohort
-  question at a budget where FedAvg trains and it saturates there too
-  ([docs/femnist_budget.md](docs/femnist_budget.md)) — but every run at the
-  working budget is no-DP, so no DP-cost figure exists on FEMNIST at an
-  operating point where training works.
+- **The FEMNIST results are harness results, at one working operating
+  point.** The dataset swaps by config alone and the gRPC path accepts
+  `configs/femnist.yaml`, but every recorded FEMNIST number comes from the
+  in-process harness (`scripts/femnist_experiments.py`) — nobody has started
+  1,000 client containers on one host. The DP cost figure (4.6 pp at
+  ε = 6.228) is measured at E = 10, R = 20, m = 200 with a clip bracketed at
+  one seed; other budgets, cohorts and rounds may price DP differently — the
+  R = 100 curve, in particular, has no DP arm. And the population is the
+  seeded 1,000-writer subsample throughout, not the full 3,400-writer set.
 
 - **The FEMNIST source data carries a small upstream quirk**, found while
   testing and pinned rather than hidden: 0.84 % of test images are
@@ -717,26 +731,16 @@ limitation stated above and contradicts no claim made above it.
   highest-value change available. (A configuration item, not a DP item; the
   sweep that establishes it is a simulation, and the committed configs and
   `results/*.json` still reflect the un-tuned value.)
-- **DP reintroduction on FEMNIST at the working budget.** The budget search
-  is done — E = 10 trains (72.8 % at R = 20, 80.4 % at R = 100, under
-  *Results* and [docs/femnist_budget.md](docs/femnist_budget.md)) — but every
-  run there is no-DP by design. The unbuilt half is the DP arm at that
-  operating point, and it starts with re-bracketing the clip from scratch:
-  at E = 10 the median update norm is ≈ 1.9–2.6, an order of magnitude above
-  the updates the recorded FEMNIST bracket measured, so the old `S` = 0.5
-  would bind on every client and act as a server learning rate, not a
-  sensitivity bound. On the Fashion-MNIST side, the N = 2m tables remain as
-  recorded, read with their stated confound.
-- **Adaptive-vs-fixed clipping comparison runs.** The quantile-based
-  adaptive factory is implemented behind config
-  (`privacy.adaptive_clipping`, [docs/adaptive_clipping.md](docs/adaptive_clipping.md)),
-  with the ε split settled and unit-tested — what does not exist is the
-  evidence: Fashion-MNIST at its working budget and FEMNIST at E = 10,
-  adaptive versus best fixed clip, three seeds each. Until those run, the
-  fixed path stays the default and no claim is made that adaptation helps.
-  The motivation stands: the norm a clip should track falls with cohort
-  size — median 0.984 at m = 5 down to 0.289 at m = 200 — so no single
-  constant is right across configurations.
+- **A DP arm for the R = 100 curve, and a lower adaptive target quantile.**
+  Both delivered comparisons stop at R = 20: the DP cost figure and the
+  adaptive-vs-fixed verdict (under *Results* and
+  [docs/adaptive_clipping.md](docs/adaptive_clipping.md)) are unmeasured on
+  the longer budget where FEMNIST reaches 80.4 %. And the Fashion result
+  points at an untried knob: where the tuned optimum is a *binding* clip,
+  a 0.5-quantile target is mismatched by construction — a lower
+  `adaptive_target_quantile` is the obvious next arm, and has not been run.
+  On the Fashion-MNIST side, the N = 2m tables remain as recorded, read
+  with their stated confound.
 - **Genuine multi-host deployment**, replacing single-host containers, to
   exercise real network latency, partitions and heterogeneous clients.
 - **Persistent server state**, so a restart resumes at the current model version
