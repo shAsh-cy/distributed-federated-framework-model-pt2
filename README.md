@@ -652,12 +652,18 @@ Stated plainly, because each of these is a real boundary of what was built.
   naturally occurring per-party heterogeneity. Results here say nothing about how
   the method performs on real federated data.
 
-- **Secure aggregation is not implemented, so the server observes every
-  individual client update.** Updates arrive as plaintext weights and the server
-  reads each one before averaging. Differential privacy bounds what the *released
-  global model* reveals; it does nothing to hide an individual contribution from
-  the server itself. A server that wanted to inspect or invert a single client's
-  update could do so.
+- **The deployed training paths still show the server every individual
+  update.** Pairwise-masking secure aggregation is now implemented and tested
+  at the protocol level ([fl/secure_aggregation.py](fl/secure_aggregation.py),
+  a clearly-marked teaching implementation:
+  [docs/secure_aggregation.md](docs/secure_aggregation.md)) — the server
+  observes only masked vectors, dropout mid-round and during recovery are
+  handled, and the unmasked sum is bit-exact. But it is not wired into the
+  gRPC transport or the TFF path, so in every run this repo records, updates
+  still arrive as plaintext weights. Composing it with the DP path is a real
+  protocol change, not a flag: the TFF aggregator clips and noises centrally,
+  after seeing individual updates, and masking requires client-side clipping
+  with distributed noise.
 
 - **One seed per cell across the main sweep, and DP runs do not reproduce at a
   fixed seed** (see *Results* for why). Measured run-to-run spread is
@@ -675,7 +681,11 @@ Stated plainly, because each of these is a real boundary of what was built.
   malicious update within the clipping norm is aggregated like any other. There is
   no update-poisoning detection, no robust aggregation rule (no median, trimmed
   mean or Krum), no client reputation, and no authentication: any process that can
-  reach the port can register and contribute.
+  reach the port can register and contribute. Secure aggregation, once wired in,
+  *widens* this rather than narrowing it: masking constrains nothing about the
+  aggregate's contents, and robust rules that inspect individual updates are
+  incompatible with masking as-is
+  ([docs/secure_aggregation.md](docs/secure_aggregation.md)).
 
 - **The FEMNIST results are harness results, at one working operating
   point.** The dataset swaps by config alone and the gRPC path accepts
@@ -717,8 +727,13 @@ Nothing in this section is finished work — where groundwork already exists,
 the item says exactly which piece is missing. Each item addresses a
 limitation stated above and contradicts no claim made above it.
 
-- **Secure aggregation**, so the server learns only the sum and never an
-  individual update — the gap named in Limitations.
+- **Secure aggregation in the deployed paths.** The masking protocol itself
+  exists (pairwise masks, Shamir-backed dropout recovery, bit-exact sums —
+  [docs/secure_aggregation.md](docs/secure_aggregation.md)); what does not is
+  the wiring: the gRPC transport still moves plaintext weights, the TFF DP
+  path still clips centrally, and composing masking with DP means client-side
+  clipping plus distributed noise. Production cryptography (authenticated key
+  exchange, encrypted share transport) is a further, separate distance.
 - **Robust aggregation rules** (coordinate-wise median, trimmed mean, Krum) and
   update-poisoning detection, to give the system an actual threat model.
 - **Client authentication and TLS**, replacing `insecure_channel` and the
