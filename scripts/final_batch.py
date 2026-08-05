@@ -16,14 +16,27 @@ crashed or interrupted batch resumes by re-running the script.
   D  docs/_final_batch_d.json  Fashion-MNIST at its working budget
                                (m=50 of N=100, z=2.0): fixed S=0.5 vs
                                adaptive, 3 seeds each arm.
+  E  docs/_final_batch_e.json  THE COLD-START ARM. FEMNIST, E=10, m=50,
+                               R=100, 1 seed, adaptive from TFF's naive 0.1
+                               default, plus a matched fixed arm at S=2.0.
+                               R=100 on purpose: climbing 0.1 -> ~2.0 at
+                               geometric rate 0.2 is ~15 rounds at full
+                               speed, so a 20-round budget would measure
+                               warm-up only. Round 20 read off the curve
+                               answers the short budget; round 100 answers
+                               whether adaptation FINDS the clip at all.
+  F  docs/_final_batch_f.json  The Fashion quantile: adaptive at target
+                               quantile {0.2, 0.35}, 3 seeds each, against
+                               the recorded q=0.5 and fixed arms from D.
 
-Adaptive arms start from the SAME clip the fixed arm uses (not TFF's 0.1
-default): with only 20 rounds and a geometric adaptation rate of 0.2, a cold
-start from 0.1 would spend most of the run climbing toward the norm scale and
-the comparison would measure warm-up, not adaptation. Total epsilon for an
-adaptive run equals compute_epsilon at the nominal z (sigma-additivity;
-see docs/adaptive_clipping.md), and the value/count split is recorded via
-adaptive_noise_breakdown in each JSON.
+Phases A-D warm-started their adaptive arms from the fixed arm's clip: with
+only 20 rounds and a geometric adaptation rate of 0.2, a cold start from 0.1
+spends most of the run climbing toward the norm scale and the comparison
+measures warm-up, not adaptation. Phase E is the deliberate exception -- the
+cold start IS the experiment, testing whether adaptation finds a clip it was
+never told. Total epsilon for an adaptive run equals compute_epsilon at the
+nominal z (sigma-additivity; see docs/adaptive_clipping.md), and the
+value/count split is recorded via adaptive_noise_breakdown in each JSON.
 
 Seeds fix the population draw, model init and cohort sampling only; TFF draws
 DP noise in its executor, unseedably, by long-standing repo rule.
@@ -66,6 +79,12 @@ FASHION_CLIP = 0.5
 ADAPTIVE_QUANTILE = 0.5
 ADAPTIVE_LR = 0.2
 FLAT_THRESHOLD = 0.02
+COLD_START_CLIP = 0.1  # TFF's default initial estimate
+COLD_START_ROUNDS = 100
+COLD_START_M = 50
+COLD_START_FIXED_CLIP = 2.0  # phase A's bracket answer
+COLD_TARGET_NEIGHBOURHOOD = 1.8  # "reached ~2.0" = first round at or above this
+FASHION_QUANTILES = (0.2, 0.35)
 
 
 def pick_clip(cells: list[dict], flat_threshold: float = FLAT_THRESHOLD) -> dict:
@@ -423,6 +442,168 @@ def phase_d() -> dict:
     }
 
 
+def phase_e(population) -> dict:
+    """The cold-start arm: does adaptation FIND a clip it was never told?
+
+    Phase C warm-started from the bracket answer and measured whether the
+    estimator HOLDS a tuned clip. Here the adaptive arm starts from TFF's
+    naive 0.1 default and runs 100 rounds beside a fixed arm at the bracket
+    answer S=2.0, both at eps=6.228 calibrated for the full 100 rounds.
+    """
+    import femnist_experiments as fx
+
+    from fl.aggregation import (
+        AdaptiveDPFedAvgAggregator,
+        calibrate_noise_multiplier,
+        compute_epsilon,
+    )
+
+    train, test, shards = population
+    q = COLD_START_M / WRITERS
+    z = calibrate_noise_multiplier(TARGET_EPSILON, q, COLD_START_ROUNDS, DELTA)
+    achieved = compute_epsilon(z, q, COLD_START_ROUNDS, DELTA)
+    LOGGER.info(
+        "PHASE E: q=%.3f calibrated z=%.4f for R=%d (eps=%.4f)", q, z, COLD_START_ROUNDS, achieved
+    )
+
+    seed = SEEDS[0]
+    common = {
+        "train": train,
+        "test": test,
+        "shards": shards,
+        "clients_per_round": COLD_START_M,
+        "rounds": COLD_START_ROUNDS,
+        "dp": True,
+        "noise_multiplier": z,
+        "seed": seed,
+        "local_epochs": LOCAL_EPOCHS,
+    }
+    aggregator = AdaptiveDPFedAvgAggregator(
+        noise_multiplier=z,
+        initial_l2_clip_norm=COLD_START_CLIP,
+        clients_per_round=COLD_START_M,
+        target_quantile=ADAPTIVE_QUANTILE,
+        learning_rate=ADAPTIVE_LR,
+    )
+    cold = fx.simulate(
+        l2_clip_norm=COLD_START_CLIP,
+        aggregator=aggregator,
+        label=f"coldstart/adaptive/init={COLD_START_CLIP}/seed={seed}",
+        **common,
+    )
+    fixed = fx.simulate(
+        l2_clip_norm=COLD_START_FIXED_CLIP,
+        label=f"coldstart/fixed/S={COLD_START_FIXED_CLIP}/seed={seed}",
+        **common,
+    )
+
+    clips = [h["adapted_clip"] for h in cold["history"]]
+    reached = next(
+        (h["round"] for h in cold["history"] if h["adapted_clip"] >= COLD_TARGET_NEIGHBOURHOOD),
+        None,
+    )
+    acc_at = lambda run, r: run["history"][r - 1]["accuracy"]  # noqa: E731
+    summary = {
+        "seed": seed,
+        "rounds_to_reach_neighbourhood": reached,
+        "neighbourhood_threshold": COLD_TARGET_NEIGHBOURHOOD,
+        "adaptive_acc_round_20": acc_at(cold, 20),
+        "fixed_acc_round_20": acc_at(fixed, 20),
+        "adaptive_acc_round_100": acc_at(cold, 100),
+        "fixed_acc_round_100": acc_at(fixed, 100),
+        "adaptive_final_clip": clips[-1],
+        "clip_trajectory": clips,
+    }
+    LOGGER.info(
+        "PHASE E DONE: clip reaches %.1f at round %s | R20 adaptive=%.4f fixed=%.4f | "
+        "R100 adaptive=%.4f fixed=%.4f",
+        COLD_TARGET_NEIGHBOURHOOD,
+        reached,
+        summary["adaptive_acc_round_20"],
+        summary["fixed_acc_round_20"],
+        summary["adaptive_acc_round_100"],
+        summary["fixed_acc_round_100"],
+    )
+    return {
+        "phase": "E",
+        "writers": WRITERS,
+        "m": COLD_START_M,
+        "rounds": COLD_START_ROUNDS,
+        "local_epochs": LOCAL_EPOCHS,
+        "initial_l2_clip_norm": COLD_START_CLIP,
+        "fixed_clip": COLD_START_FIXED_CLIP,
+        "target_quantile": ADAPTIVE_QUANTILE,
+        "adaptation_learning_rate": ADAPTIVE_LR,
+        "calibrated_z": z,
+        "achieved_epsilon": achieved,
+        "epsilon_accounting": _adaptive_accounting(z, COLD_START_M, q),
+        "summary": summary,
+        "adaptive_run": cold,
+        "fixed_run": fixed,
+    }
+
+
+def phase_f() -> dict:
+    """The Fashion quantile: is q=0.5 the problem, or is adaptation?
+
+    Phase D's adaptive arm tracked the median away from a binding optimum.
+    Lower targets aim the estimator at the binding regime instead. Both
+    reference arms (fixed S=0.5 and adaptive q=0.5) are read from phase D's
+    JSON, not re-run.
+    """
+    import diagnose_dp as dd
+
+    from fl.aggregation import AdaptiveDPFedAvgAggregator
+
+    d = json.loads((DOCS / "_final_batch_d.json").read_text(encoding="utf-8"))
+    arms = {}
+    for quantile in FASHION_QUANTILES:
+        runs = []
+        for seed in SEEDS:
+            aggregator = AdaptiveDPFedAvgAggregator(
+                noise_multiplier=FASHION_Z,
+                initial_l2_clip_norm=FASHION_CLIP,
+                clients_per_round=FASHION_M,
+                target_quantile=quantile,
+                learning_rate=ADAPTIVE_LR,
+            )
+            runs.append(
+                dd.simulate(
+                    num_clients=FASHION_N,
+                    clients_per_round=FASHION_M,
+                    dp=True,
+                    noise_multiplier=FASHION_Z,
+                    l2_clip_norm=FASHION_CLIP,
+                    aggregator=aggregator,
+                    seed=seed,
+                    label=f"fashion/adaptive/q={quantile}/seed={seed}",
+                )
+            )
+        summary = _summary(runs)
+        arms[str(quantile)] = {"summary": summary, "runs": runs}
+        LOGGER.info(
+            "PHASE F q=%.2f DONE: mean=%.4f range=%.4f (fixed %.4f, q=0.5 %.4f)",
+            quantile,
+            summary["mean_final"],
+            summary["range_final"],
+            d["fixed_summary"]["mean_final"],
+            d["adaptive_summary"]["mean_final"],
+        )
+    return {
+        "phase": "F",
+        "num_clients": FASHION_N,
+        "m": FASHION_M,
+        "rounds": ROUNDS,
+        "noise_multiplier": FASHION_Z,
+        "initial_l2_clip_norm": FASHION_CLIP,
+        "adaptation_learning_rate": ADAPTIVE_LR,
+        "quantiles": list(FASHION_QUANTILES),
+        "reference_fixed_summary": d["fixed_summary"],
+        "reference_q05_summary": d["adaptive_summary"],
+        "arms": arms,
+    }
+
+
 def main() -> int:
     logging.basicConfig(
         level=logging.INFO,
@@ -434,6 +615,8 @@ def main() -> int:
         "B": DOCS / "_final_batch_b.json",
         "C": DOCS / "_final_batch_c.json",
         "D": DOCS / "_final_batch_d.json",
+        "E": DOCS / "_final_batch_e.json",
+        "F": DOCS / "_final_batch_f.json",
     }
 
     def done(phase: str) -> dict | None:
@@ -443,7 +626,7 @@ def main() -> int:
         return None
 
     population = None
-    if not (out["A"].exists() and out["B"].exists() and out["C"].exists()):
+    if not all(out[p].exists() for p in ("A", "B", "C", "E")):
         LOGGER.info("loading FEMNIST population: %d writers, seed %d", WRITERS, SEEDS[0])
         population = _load_femnist_population()
 
@@ -469,14 +652,29 @@ def main() -> int:
         d = phase_d()
         _write(out["D"], d)
 
+    e = done("E")
+    if e is None:
+        e = phase_e(population)
+        _write(out["E"], e)
+
+    f = done("F")
+    if f is None:
+        f = phase_f()
+        _write(out["F"], f)
+
     LOGGER.info(
         "BATCH COMPLETE: A chose S=%s | B dp mean=%.4f | C adaptive mean=%.4f | "
-        "D fixed=%.4f adaptive=%.4f",
+        "D fixed=%.4f adaptive=%.4f | E cold R100=%.4f vs fixed=%.4f | "
+        "F q=%s means=%s",
         chosen_clip,
         b["summary"]["mean_final"],
         c["summary"]["mean_final"],
         d["fixed_summary"]["mean_final"],
         d["adaptive_summary"]["mean_final"],
+        e["summary"]["adaptive_acc_round_100"],
+        e["summary"]["fixed_acc_round_100"],
+        list(FASHION_QUANTILES),
+        [round(f["arms"][str(q)]["summary"]["mean_final"], 4) for q in FASHION_QUANTILES],
     )
     return 0
 

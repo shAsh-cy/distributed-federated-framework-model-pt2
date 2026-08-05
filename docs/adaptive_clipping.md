@@ -1,10 +1,14 @@
 # Adaptive clipping: implementation, accounting, and the measured comparison
 
-**Status: measured.** The comparison this document was stubbed for has run —
-four phases, unattended, raw data in `docs/_final_batch_{a,b,c,d}.json`.
-The one-line verdict, stated the way the decision criterion below demands:
-**adaptive clipping matches the bracketed fixed clip on FEMNIST while
-removing the need for the bracket, and trails it on Fashion-MNIST.**
+**Status: measured, including the cold start and the quantile follow-ups.**
+Six phases, unattended, raw data in `docs/_final_batch_{a..f}.json`. The
+verdict after all of them: **adaptive clipping is a reliable quantile
+tracker, and that is both its strength and its limit.** Warm-started at a
+tuned clip it holds it (FEMNIST: a match). Cold-started it finds *the
+median* — which on every configuration measured here where the tuned
+optimum was a *binding* clip is the wrong target (Fashion at q=0.5; the
+FEMNIST cold start). A lower target quantile recovers Fashion's fixed
+performance — which relocates the tuning problem rather than removing it.
 
 ## What is implemented
 
@@ -61,19 +65,24 @@ on Fashion. On both datasets, DP costs roughly a third of federation.
 
 ## Adaptive vs fixed, measured (phases C and D)
 
-Both adaptive arms start from the fixed arm's clip, not TFF's 0.1 default:
-with 20 rounds and geometric rate 0.2, a cold start from 0.1 would measure
-warm-up, not adaptation (a deliberate deviation from this document's
-original stub, recorded in the batch script's docstring).
+**Which arms started where — this matters for reading the table.** Both
+adaptive arms were WARM-STARTED from the fixed arm's clip, not TFF's 0.1
+default: the FEMNIST arm at 2.0 (phase A's bracket answer), the Fashion arm
+at 0.5 (the tuned sweep winner). With 20 rounds and geometric rate 0.2 a
+cold start would measure warm-up, not adaptation — so these phases measure
+whether the estimator *holds* a tuned clip, not whether it *finds* one.
+The finding question is phase E, below.
 
 | | fixed | adaptive | per-seed (adaptive) |
 |---|---|---|---|
 | FEMNIST, E=10, m=200, ε=6.228 | 0.6815 (range 0.007) | **0.6830 (range 0.006)** | 0.684 / 0.680 / 0.685 |
 | Fashion, m=50, ε=6.228 | **0.7240 (range 0.032)** | 0.7006 (range 0.051) | 0.722 / 0.671 / 0.709 |
 
-**FEMNIST: a match inside seed ranges** (+0.15pp on the mean), achieved
-without knowing the bracket answer in advance — which is the entire value
-proposition. **Fashion: adaptive trails by 2.3pp on the mean** with
+**FEMNIST: a match inside seed ranges** (+0.15pp on the mean). An earlier
+revision of this document claimed the match was achieved "without knowing
+the bracket answer in advance" — that was wrong, and is corrected here: the
+arm was warm-started AT the bracket answer, so it demonstrates holding, not
+finding. **Fashion: adaptive trails by 2.3pp on the mean** with
 overlapping seed ranges (fixed 0.703–0.735, adaptive 0.671–0.722); by this
 repo's resolution standards the gap is not fully resolved, but adaptive
 never beats fixed on any seed pairing, and the mechanism (next section)
@@ -109,14 +118,75 @@ less implicit step-size control, slightly worse accuracy. Adaptive
 clipping finds the quantile it is told to find; when the tuned optimum
 lies *below* the median, that is the wrong target.
 
+## The cold start (phase E): adaptation finds *a* clip — not *the* clip
+
+One seed, stated as such. FEMNIST, E=10, m=50, R=100, ε=6.228 recalibrated
+for 100 rounds (z=0.8232); adaptive from TFF's naive 0.1 default beside a
+matched fixed arm at the bracket answer S=2.0:
+
+| | round 20 | round 100 |
+|---|---|---|
+| fixed S=2.0 | **0.593** | **0.624** |
+| adaptive from 0.1 | 0.339 | 0.548 |
+
+The clip needs **31 rounds** to reach the neighbourhood of 2.0 (0.26 at
+round 10, 0.68 at 20, 1.78 at 30) — matching the theoretical maximum climb
+rate of e^(0.1) per round when everything clips, so no faster start was
+available at this learning rate. The warm-up half of the verdict was
+expected: at round 20 the cold arm is 25pp behind, and a 20-round budget
+cold-started from 0.1 would have measured nothing else.
+
+The unexpected half: **it never catches up.** From round ~35 the clip
+overshoots to 2.6–3.0 and settles at the median (final clip 2.81, clipped
+fraction 0.50 — the estimator doing exactly its job), and accuracy
+plateaus at ~0.55, still 7.6pp behind the fixed arm at round 100. Note the
+feedback: the adaptive arm's own median norms run 2.6–3.1 while the fixed
+arm's run ~2.6 — a larger clip buys proportionally larger noise, a noisier
+model produces larger local updates, and the median the estimator chases
+is partly its own noise. The equilibrium "clip ≈ median" is *above* the
+bracketed optimum, which sits deliberately in the binding regime below the
+median. Same lesson as Fashion, now on FEMNIST: tracking the median is
+only the right move when the optimum happens to be there.
+
+## The Fashion quantile (phase F): recovery, at the price of the point
+
+Aiming the estimator below the median instead — target quantile 0.2 and
+0.35, 3 seeds each, warm-started at 0.5 like the recorded q=0.5 arm:
+
+| arm | mean | range | per-seed |
+|---|---|---|---|
+| fixed S=0.5 | **0.7240** | 0.032 | 0.733 / 0.735 / 0.703 |
+| adaptive q=0.2 | 0.7184 | 0.041 | 0.725 / 0.695 / 0.736 |
+| adaptive q=0.35 | 0.7201 | 0.034 | 0.732 / 0.730 / 0.698 |
+| adaptive q=0.5 | 0.7006 | 0.051 | 0.722 / 0.671 / 0.709 |
+
+**Yes: a lower quantile recovers the fixed arm's performance** — both 0.2
+and 0.35 land within half a point of fixed, inside overlapping ranges, and
+the q=0.2 trajectory steers the clip to ~0.49–0.56, i.e. onto the tuned
+value the sweep found. Insensitivity between 0.2 and 0.35 is worth noting:
+the quantile knob is coarse, at least here.
+
+**And the uncomfortable half, stated without softening: this is
+relocation, not removal.** The lower quantile had to be *chosen*, and it
+was chosen by already knowing the fixed sweep's answer — that the optimum
+binds. Adaptive clipping with a tuned target quantile is a tuned method.
+Combined with phase E — where the untuned default (track the median)
+converged confidently to the wrong operating point — the value proposition
+is weaker than the phase-C match alone suggested: the estimator reliably
+delivers whatever quantile it is aimed at, and aiming it is the same kind
+of problem that bracketing the clip was, one level up. No rule for
+choosing the target quantile from first principles is offered here,
+because these experiments do not provide one.
+
 ## Decision, per the criterion stated before the data
 
 The stub's criterion: match-or-beat the bracketed optimum within seed
 ranges while removing the bracket → recommended default; trail materially →
-opt-in. The split result gives a split answer, resolved conservatively:
-**the fixed path stays the default.** Adaptive clipping is the recommended
-*starting point when no bracket exists* — on FEMNIST it recovered the
-bracket's answer for free — but where a tuned clip already exists it should
-be kept, and where the tuned optimum is a binding clip, a 0.5-quantile
-target is actively mismatched (a lower `adaptive_target_quantile` would be
-the thing to try, and has not been).
+opt-in. After all six phases: **the fixed path stays the default**, and
+the earlier "recommended starting point when no bracket exists" claim is
+withdrawn — the cold start is the no-bracket scenario, and it lost by
+7.6pp at five times the short budget (one seed). What survives honestly:
+adaptive clipping *holds* a known-good clip through drift in the norms
+(phase C), and with a target quantile tuned against known behaviour it
+matches fixed (phase F). Both uses presuppose the knowledge the method was
+hoped to replace.
