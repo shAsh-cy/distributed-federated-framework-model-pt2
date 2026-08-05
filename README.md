@@ -507,11 +507,20 @@ federated setup itself costs relative to the pooled baseline. On both
 datasets, DP costs roughly a third of what federation does. The same batch
 measured quantile-adaptive clipping against the bracketed fixed clip,
 3 seeds per arm at identical ε: **a match on FEMNIST (68.3 % vs 68.2 %,
-inside seed ranges, no bracket needed), a trail on Fashion (70.1 % vs
-72.4 %)** — the estimator tracks the median faithfully, and on Fashion the
-tuned optimum is a *binding* clip below the median, so tracking the median
-is the wrong target there. Fixed clipping stays the default. Full
-write-up: **[docs/adaptive_clipping.md](docs/adaptive_clipping.md)**.
+inside seed ranges — warm-started at the bracket answer, so it shows the
+estimator *holds* a tuned clip), a trail on Fashion (70.1 % vs 72.4 %)** —
+the estimator tracks the median faithfully, and on Fashion the tuned
+optimum is a *binding* clip below the median, so tracking the median is
+the wrong target there. The follow-ups sharpened both edges: cold-started
+from TFF's 0.1 default (FEMNIST, R = 100, one seed) the clip needs 31
+rounds to reach the bracket answer, then **overshoots to the median and
+never catches the matched fixed arm (54.8 % vs 62.4 % at round 100)** —
+adaptation finds *a* clip, not *the* clip; and on Fashion a lower target
+quantile (0.2 or 0.35) **does recover the fixed arm's performance
+(71.8–72.0 % vs 72.4 %)** — but choosing that quantile required already
+knowing the optimum binds, which relocates the tuning problem rather than
+removing it. Fixed clipping stays the default. Full write-up:
+**[docs/adaptive_clipping.md](docs/adaptive_clipping.md)**.
 
 ---
 
@@ -746,16 +755,16 @@ limitation stated above and contradicts no claim made above it.
   highest-value change available. (A configuration item, not a DP item; the
   sweep that establishes it is a simulation, and the committed configs and
   `results/*.json` still reflect the un-tuned value.)
-- **A DP arm for the R = 100 curve, and a lower adaptive target quantile.**
-  Both delivered comparisons stop at R = 20: the DP cost figure and the
-  adaptive-vs-fixed verdict (under *Results* and
-  [docs/adaptive_clipping.md](docs/adaptive_clipping.md)) are unmeasured on
-  the longer budget where FEMNIST reaches 80.4 %. And the Fashion result
-  points at an untried knob: where the tuned optimum is a *binding* clip,
-  a 0.5-quantile target is mismatched by construction — a lower
-  `adaptive_target_quantile` is the obvious next arm, and has not been run.
-  On the Fashion-MNIST side, the N = 2m tables remain as recorded, read
-  with their stated confound.
+- **A DP arm for the m = 200, R = 100 curve.** The headline DP cost figure
+  stops at R = 20, and the cold-start run that did go to R = 100 used
+  m = 50 (one seed, as a matched pair — under *Results* and
+  [docs/adaptive_clipping.md](docs/adaptive_clipping.md)); nobody has
+  measured what ε = 6.228 costs on the m = 200 budget where no-DP FEMNIST
+  reaches 80.4 %. The lower-quantile arm, by contrast, has now been run —
+  what remains open there is a principled rule for *choosing* the target
+  quantile, which the measurements do not provide. On the Fashion-MNIST
+  side, the N = 2m tables remain as recorded, read with their stated
+  confound.
 - **Genuine multi-host deployment**, replacing single-host containers, to
   exercise real network latency, partitions and heterogeneous clients.
 - **Persistent server state**, so a restart resumes at the current model version
