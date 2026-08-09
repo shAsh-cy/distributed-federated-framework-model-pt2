@@ -670,7 +670,7 @@ no-EOF-pipe warning that applies to every TFF-touching script here.
 pytest --cov=fl --cov-report=term-missing
 ```
 
-**378 tests, 93 % statement coverage (fl/ + coordinator/**, measured by the
+**388 tests, 93 % statement coverage (fl/ + coordinator/**, measured by the
 same `pytest --cov` command below in the dev image), run on every push by GitHub Actions
 alongside `ruff check` and `ruff format --check`. Four core areas, one file
 each: `tests/test_rpc.py` (transport, bit-identical weight round-trip,
