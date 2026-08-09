@@ -64,7 +64,7 @@ def free_port() -> int:
 
 def run(config: Config, port: int | None = None) -> dict:
     """Run every round of ``config`` and return a JSON-serialisable report."""
-    from fl.aggregation import compute_epsilon, make_aggregator
+    from fl.aggregation import aggregator_from_config, compute_epsilon
 
     seed_everything(config.seed)
 
@@ -80,12 +80,7 @@ def run(config: Config, port: int | None = None) -> dict:
     initial_weights = template.get_weights()
     num_params = count_parameters(template)
 
-    aggregator = make_aggregator(
-        dp_enabled=config.privacy.enabled,
-        noise_multiplier=config.privacy.noise_multiplier,
-        l2_clip_norm=config.privacy.l2_clip_norm,
-        clients_per_round=config.clients_per_round,
-    )
+    aggregator = aggregator_from_config(config, config.clients_per_round)
 
     epsilon_fn = None
     if config.privacy.enabled:
@@ -143,6 +138,21 @@ def run(config: Config, port: int | None = None) -> dict:
     wall_clock = time.monotonic() - started
     final = metrics[-1] if metrics else None
 
+    checkpoint_written = None
+    if config.training.checkpoint_path:
+        from fl.checkpoint import save_checkpoint
+
+        checkpoint_written = str(
+            save_checkpoint(
+                config.training.checkpoint_path,
+                server.global_weights(),
+                model_name=config.model.name,
+                config=config.to_dict(),
+                metadata={"rounds_completed": len(metrics)},
+            )
+        )
+        LOGGER.info("wrote final model checkpoint to %s", checkpoint_written)
+
     return {
         "config": config.to_dict(),
         "aggregator": aggregator.name,
@@ -163,6 +173,7 @@ def run(config: Config, port: int | None = None) -> dict:
             "loss": final.loss if final else None,
             "epsilon": final.epsilon if final else None,
         },
+        "checkpoint": checkpoint_written,
         "wall_clock_seconds": round(wall_clock, 2),
         "total_bytes_sent": sum(m.bytes_sent for m in metrics),
         "total_bytes_received": sum(m.bytes_received for m in metrics),

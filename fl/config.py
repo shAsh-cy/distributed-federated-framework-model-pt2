@@ -116,9 +116,17 @@ class TrainingConfig:
     batch_size: int = 32
     learning_rate: float = 0.01
     momentum: float = 0.9
+    #: Where to write the final global model as an .npz checkpoint
+    #: (fl/checkpoint.py). None disables the write on the gRPC and one-shot
+    #: experiment paths; the coordinator always checkpoints per run id.
+    checkpoint_path: str | None = None
 
     def validate(self) -> None:
         _require(self.rounds >= 1, f"training.rounds must be >= 1, got {self.rounds}")
+        _require(
+            self.checkpoint_path is None or str(self.checkpoint_path).strip() != "",
+            "training.checkpoint_path must be a non-empty path or omitted",
+        )
         _require(
             0.0 < self.client_fraction <= 1.0,
             f"training.client_fraction must be in (0, 1], got {self.client_fraction}",

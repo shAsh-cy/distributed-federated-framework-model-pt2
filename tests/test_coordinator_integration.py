@@ -120,3 +120,19 @@ class TestTwoRealRounds:
         """The stream a late consumer replays is exactly the run's history."""
         detail, events = completed_run
         assert detail["num_events"] == len(events)
+
+
+class TestCheckpointArtifact:
+    def test_completed_run_leaves_a_loadable_model(self, completed_run):
+        """Audit finding M2 (docs/audit_v0_2.md): completed runs used to leave
+        only metrics. The checkpoint must exist, load without TF, and carry
+        tensors shaped like the model that trained."""
+        from fl.checkpoint import load_checkpoint
+
+        detail, _events = completed_run
+        checkpoint = (detail.get("final_metrics") or {}).get("checkpoint")
+        assert checkpoint, f"no checkpoint recorded in final metrics: {detail}"
+        weights, header = load_checkpoint(checkpoint)
+        assert header["model"] == "small_cnn"
+        assert len(weights) == header["num_tensors"] > 0
+        assert all(w.size > 0 for w in weights)

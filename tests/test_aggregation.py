@@ -360,3 +360,80 @@ class TestCalibrateNoiseMultiplier:
 
         with pytest.raises(ValueError, match="must be > 0"):
             calibrate_noise_multiplier(0.0, 0.5, 20)
+
+
+@pytest.mark.slow
+class TestDPAcrossThreads:
+    def test_second_dp_aggregation_in_a_fresh_thread_succeeds(self):
+        """Audit finding C2 (docs/audit_v0_2.md): TFF's context stack is
+        thread-local, so before the per-thread context guard the process's
+        second DP aggregation on a fresh thread died with "No default context
+        installed". The coordinator runs every training run on its own
+        thread, so this is exactly one-DP-run-per-process without the fix."""
+        import threading
+
+        results: list[Exception | None] = []
+
+        def run_one() -> None:
+            try:
+                agg = DPFedAvgAggregator(
+                    noise_multiplier=1.0, l2_clip_norm=1.0, clients_per_round=2
+                )
+                template = [np.zeros((2, 2), dtype=np.float32)]
+                agg.aggregate(
+                    [
+                        ClientUpdate("a", [np.ones((2, 2), dtype=np.float32)], 1),
+                        ClientUpdate("b", [np.ones((2, 2), dtype=np.float32)], 1),
+                    ],
+                    template,
+                )
+                results.append(None)
+            except Exception as exc:  # noqa: BLE001 - the exception IS the assertion
+                results.append(exc)
+
+        for _ in range(2):
+            thread = threading.Thread(target=run_one)
+            thread.start()
+            thread.join(timeout=120)
+
+        assert results == [None, None], results
+
+
+class TestAggregatorFromConfig:
+    def test_adaptive_config_is_honoured_on_every_path(self):
+        """Audit finding M3 (docs/audit_v0_2.md): two of three execution
+        paths dropped the adaptive_* fields on the floor, so an adaptive
+        config silently ran fixed clipping. All paths now build through
+        aggregator_from_config, which forwards the whole privacy section."""
+        from fl.aggregation import AdaptiveDPFedAvgAggregator, aggregator_from_config
+        from fl.config import Config
+
+        cfg = Config.from_dict(
+            {
+                "privacy": {
+                    "enabled": True,
+                    "noise_multiplier": 1.1,
+                    "l2_clip_norm": 2.0,
+                    "adaptive_clipping": True,
+                    "adaptive_target_quantile": 0.4,
+                }
+            }
+        )
+        agg = aggregator_from_config(cfg, clients_per_round=50)
+        assert isinstance(agg, AdaptiveDPFedAvgAggregator)
+        assert agg.target_quantile == 0.4
+        assert agg.initial_l2_clip_norm == 2.0
+
+    def test_fixed_and_plain_paths_unchanged(self):
+        from fl.aggregation import aggregator_from_config
+        from fl.config import Config
+
+        fixed = aggregator_from_config(
+            Config.from_dict(
+                {"privacy": {"enabled": True, "noise_multiplier": 2.0, "l2_clip_norm": 0.5}}
+            ),
+            clients_per_round=5,
+        )
+        assert isinstance(fixed, DPFedAvgAggregator)
+        plain = aggregator_from_config(Config.from_dict({}), clients_per_round=5)
+        assert isinstance(plain, FedAvgAggregator)

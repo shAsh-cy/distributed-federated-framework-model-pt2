@@ -202,6 +202,23 @@ class FedAvgAggregator:
         return weighted_average(updates)
 
 
+def _ensure_tff_context() -> None:
+    """Install a TFF execution context for the CURRENT thread if it has none.
+
+    TFF's context stack is ``threading.local``; the default context installed
+    at import time exists only in the importing thread. Any DP aggregation on
+    a fresh thread — the coordinator runs each training run on one — would
+    otherwise die with ``RuntimeError: No default context installed`` on the
+    process's second DP run (audit finding C2, docs/audit_v0_2.md).
+    """
+    import tensorflow_federated as tff
+    from tensorflow_federated.python.core.impl.context_stack import runtime_error_context
+
+    current = tff.framework.get_context_stack().current
+    if isinstance(current, runtime_error_context.RuntimeErrorContext):
+        tff.backends.native.set_sync_local_cpp_execution_context()
+
+
 class DPFedAvgAggregator:
     """Client-level differentially private FedAvg, backed by TFF.
 
@@ -250,6 +267,7 @@ class DPFedAvgAggregator:
         """Build the TFF aggregation process lazily, once the weight shapes are known."""
         import tensorflow_federated as tff
 
+        _ensure_tff_context()
         value_type = tff.to_type(
             [tff.TensorType(np.float32, np.asarray(w).shape) for w in template]
         )
@@ -395,6 +413,7 @@ class AdaptiveDPFedAvgAggregator:
     def _ensure_process(self, template: Weights) -> None:
         import tensorflow_federated as tff
 
+        _ensure_tff_context()
         value_type = tff.to_type(
             [tff.TensorType(np.float32, np.asarray(w).shape) for w in template]
         )
@@ -536,6 +555,31 @@ def calibrate_noise_multiplier(
         else:
             hi = mid
     return (lo + hi) / 2.0
+
+
+def aggregator_from_config(config: object, clients_per_round: int) -> object:
+    """Build the aggregator a Config's privacy section asks for — ALL of it.
+
+    Exists because two of the three execution paths forwarded only the four
+    basic privacy fields to :func:`make_aggregator`, so
+    ``privacy.adaptive_clipping: true`` silently ran FIXED clipping on the
+    coordinator and one-shot experiment paths while reporting the config it
+    did not honour (audit finding M3, docs/audit_v0_2.md). Every path now
+    routes through this one constructor. ``config`` is the typed
+    :class:`fl.config.Config`; duck-typed here to keep this module free of a
+    config import.
+    """
+    privacy = config.privacy
+    return make_aggregator(
+        dp_enabled=privacy.enabled,
+        noise_multiplier=privacy.noise_multiplier,
+        l2_clip_norm=privacy.l2_clip_norm,
+        clients_per_round=clients_per_round,
+        adaptive_clipping=privacy.adaptive_clipping,
+        adaptive_target_quantile=privacy.adaptive_target_quantile,
+        adaptive_learning_rate=privacy.adaptive_learning_rate,
+        adaptive_clipped_count_stddev=privacy.adaptive_clipped_count_stddev,
+    )
 
 
 def make_aggregator(

@@ -78,6 +78,16 @@ The finding question is phase E, below.
 | FEMNIST, E=10, m=200, ε=6.228 | 0.6815 (range 0.007) | **0.6830 (range 0.006)** | 0.684 / 0.680 / 0.685 |
 | Fashion, m=50, ε=6.228 | **0.7240 (range 0.032)** | 0.7006 (range 0.051) | 0.722 / 0.671 / 0.709 |
 
+**Reconciliation the reader deserves** (audit finding M4): this Fashion
+fixed arm is the SAME cell dp_diagnosis §8.2 recorded at **0.7336 (range
+1.1 pp)** — an independent three-seed re-measurement months apart, under
+noise that TFF draws unseedably. The two draws differ by 1.0 pp with
+overlapping ranges; both are committed (`_replication.json`,
+`_final_batch_d.json`), neither is "the" number, and the DP-cost figure
+quoted from §8.2 (~3.5 pp) would read ~4.5 pp against this draw. Same
+mechanism, same ε; the spread is the unseedable noise doing what this repo
+has always said it does.
+
 **FEMNIST: a match inside seed ranges** (+0.15pp on the mean). An earlier
 revision of this document claimed the match was achieved "without knowing
 the bracket answer in advance" — that was wrong, and is corrected here: the
@@ -151,7 +161,10 @@ only the right move when the optimum happens to be there.
 ## The Fashion quantile (phase F): recovery, at the price of the point
 
 Aiming the estimator below the median instead — target quantile 0.2 and
-0.35, 3 seeds each, warm-started at 0.5 like the recorded q=0.5 arm:
+0.35, 3 seeds each, warm-started at 0.5 like the recorded q=0.5 arm. Every
+arm in this table is DP at the working budget: z = 2.0, m = 50, giving
+**ε = 6.228 at δ = 1×10⁻⁵**, identical across arms by the σ-additivity
+identity above:
 
 | arm | mean | range | per-seed |
 |---|---|---|---|
@@ -190,3 +203,16 @@ adaptive clipping *holds* a known-good clip through drift in the norms
 (phase C), and with a target quantile tuned against known behaviour it
 matches fixed (phase F). Both uses presuppose the knowledge the method was
 hoped to replace.
+
+## Reproducing
+
+```bash
+python scripts/final_batch.py >> docs/_final_batch.log 2>&1
+```
+
+One unattended script, all six phases (A–F → `docs/_final_batch_{a..f}.json`),
+resumable: a phase whose JSON already exists is skipped, so re-running after
+a crash continues where it stopped. Run detached; do not pipe stdout into a
+command that waits for EOF (TFF holds the pipe). Wall-clock ~9 h for all six
+phases from scratch on CPU. (Previously documented nowhere — audit finding
+D10.)

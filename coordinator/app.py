@@ -84,6 +84,8 @@ def create_app(store: EventStore | None = None, runner: Runner | None = None) ->
         engine = make_engine()
         create_all(engine)
         store = EventStore(engine)
+        # A persistent DB can carry runs a dead process never finished.
+        store.fail_orphaned_runs()
     if runner is None:
         runner = Runner(store)
 

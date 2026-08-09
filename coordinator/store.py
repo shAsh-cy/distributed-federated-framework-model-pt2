@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import threading
 import time
 import uuid
@@ -33,6 +34,8 @@ from sqlalchemy import select
 
 from .db import EventRow, Run, make_session_factory
 from .events import TERMINAL_TYPES, Event
+
+LOGGER = logging.getLogger("coordinator.store")
 
 
 @dataclass
@@ -90,6 +93,28 @@ class EventStore:
             )
             s.commit()
         return run_id
+
+    def fail_orphaned_runs(self) -> list[str]:
+        """Mark live runs still 'pending'/'running' as failed. Called at app
+        startup: a run in that state on a freshly started process belonged to
+        a previous process that died mid-run — no thread exists to finish it,
+        and without this it stays "running" forever (audit finding M1,
+        docs/audit_v0_2.md). In-process crashes are handled by the runner;
+        this covers process-level death."""
+        orphaned: list[str] = []
+        with self._sessions() as s:
+            rows = (
+                s.query(Run)
+                .filter(Run.source == "live", Run.status.in_(("pending", "running")))
+                .all()
+            )
+            for run in rows:
+                run.status = "failed"
+                orphaned.append(run.id)
+            s.commit()
+        for run_id in orphaned:
+            LOGGER.warning("run %s orphaned by a previous process; marked failed", run_id)
+        return orphaned
 
     def set_status(self, run_id: str, status: str, final_metrics: dict | None = None) -> None:
         with self._sessions() as s:

@@ -152,7 +152,14 @@ def _train_real(run_id: str, config_dict: dict, ctx: RunContext) -> None:
     gRPC server runs, without the transport, pushing events as it goes."""
     import numpy as np
 
-    from fl.aggregation import ClientUpdate, compute_epsilon, l2_norm, make_aggregator, subtract
+    from fl.aggregation import (
+        ClientUpdate,
+        aggregator_from_config,
+        compute_epsilon,
+        l2_norm,
+        subtract,
+    )
+    from fl.checkpoint import DEFAULT_CHECKPOINT_DIR, save_checkpoint
     from fl.config import Config
     from fl.data import dataset_num_classes, label_distribution, load_federated
     from fl.models import build_model, compile_for_evaluation, compile_for_training, weights_nbytes
@@ -184,12 +191,7 @@ def _train_real(run_id: str, config_dict: dict, ctx: RunContext) -> None:
         build_model(cfg.model.name), cfg.training.learning_rate, cfg.training.momentum
     )
     evaluator = compile_for_evaluation(build_model(cfg.model.name))
-    aggregator = make_aggregator(
-        dp_enabled=cfg.privacy.enabled,
-        noise_multiplier=cfg.privacy.noise_multiplier,
-        l2_clip_norm=cfg.privacy.l2_clip_norm,
-        clients_per_round=cfg.clients_per_round,
-    )
+    aggregator = aggregator_from_config(cfg, cfg.clients_per_round)
     rng = np.random.default_rng(cfg.seed)
     payload_bytes = weights_nbytes(global_weights)
 
@@ -299,6 +301,16 @@ def _train_real(run_id: str, config_dict: dict, ctx: RunContext) -> None:
             )
         )
 
+    # The run leaves a loadable model behind, not just metrics (audit M2).
+    checkpoint = save_checkpoint(
+        DEFAULT_CHECKPOINT_DIR / f"{run_id}.npz",
+        global_weights,
+        model_name=cfg.model.name,
+        config=cfg.to_dict(),
+        metadata={"rounds_completed": completed, "stopped_early": stopped_early},
+    )
+    LOGGER.info("run %s checkpoint: %s", run_id, checkpoint)
+
     ctx.emit(
         RunCompleted(
             run_id=run_id,
@@ -317,5 +329,6 @@ def _train_real(run_id: str, config_dict: dict, ctx: RunContext) -> None:
             "final_loss": final_loss,
             "rounds_completed": completed,
             "stopped_early": stopped_early,
+            "checkpoint": str(checkpoint),
         },
     )
