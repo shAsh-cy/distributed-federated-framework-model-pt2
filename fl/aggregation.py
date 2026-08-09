@@ -202,6 +202,23 @@ class FedAvgAggregator:
         return weighted_average(updates)
 
 
+def _ensure_tff_context() -> None:
+    """Install a TFF execution context for the CURRENT thread if it has none.
+
+    TFF's context stack is ``threading.local``; the default context installed
+    at import time exists only in the importing thread. Any DP aggregation on
+    a fresh thread — the coordinator runs each training run on one — would
+    otherwise die with ``RuntimeError: No default context installed`` on the
+    process's second DP run (audit finding C2, docs/audit_v0_2.md).
+    """
+    import tensorflow_federated as tff
+    from tensorflow_federated.python.core.impl.context_stack import runtime_error_context
+
+    current = tff.framework.get_context_stack().current
+    if isinstance(current, runtime_error_context.RuntimeErrorContext):
+        tff.backends.native.set_sync_local_cpp_execution_context()
+
+
 class DPFedAvgAggregator:
     """Client-level differentially private FedAvg, backed by TFF.
 
@@ -250,6 +267,7 @@ class DPFedAvgAggregator:
         """Build the TFF aggregation process lazily, once the weight shapes are known."""
         import tensorflow_federated as tff
 
+        _ensure_tff_context()
         value_type = tff.to_type(
             [tff.TensorType(np.float32, np.asarray(w).shape) for w in template]
         )
@@ -395,6 +413,7 @@ class AdaptiveDPFedAvgAggregator:
     def _ensure_process(self, template: Weights) -> None:
         import tensorflow_federated as tff
 
+        _ensure_tff_context()
         value_type = tff.to_type(
             [tff.TensorType(np.float32, np.asarray(w).shape) for w in template]
         )

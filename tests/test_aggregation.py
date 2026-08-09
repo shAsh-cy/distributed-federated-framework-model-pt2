@@ -360,3 +360,40 @@ class TestCalibrateNoiseMultiplier:
 
         with pytest.raises(ValueError, match="must be > 0"):
             calibrate_noise_multiplier(0.0, 0.5, 20)
+
+
+@pytest.mark.slow
+class TestDPAcrossThreads:
+    def test_second_dp_aggregation_in_a_fresh_thread_succeeds(self):
+        """Audit finding C2 (docs/audit_v0_2.md): TFF's context stack is
+        thread-local, so before the per-thread context guard the process's
+        second DP aggregation on a fresh thread died with "No default context
+        installed". The coordinator runs every training run on its own
+        thread, so this is exactly one-DP-run-per-process without the fix."""
+        import threading
+
+        results: list[Exception | None] = []
+
+        def run_one() -> None:
+            try:
+                agg = DPFedAvgAggregator(
+                    noise_multiplier=1.0, l2_clip_norm=1.0, clients_per_round=2
+                )
+                template = [np.zeros((2, 2), dtype=np.float32)]
+                agg.aggregate(
+                    [
+                        ClientUpdate("a", [np.ones((2, 2), dtype=np.float32)], 1),
+                        ClientUpdate("b", [np.ones((2, 2), dtype=np.float32)], 1),
+                    ],
+                    template,
+                )
+                results.append(None)
+            except Exception as exc:  # noqa: BLE001 - the exception IS the assertion
+                results.append(exc)
+
+        for _ in range(2):
+            thread = threading.Thread(target=run_one)
+            thread.start()
+            thread.join(timeout=120)
+
+        assert results == [None, None], results
