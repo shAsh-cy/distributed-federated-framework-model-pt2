@@ -21,8 +21,10 @@ export default defineConfig({
     globals: true,
     setupFiles: ["tests/setup.ts"],
     css: false,
-    // e2e/ and e2e-live/ are Playwright's (npm run e2e / the live config);
-    // vitest must not collect them — same failure class as audit vitest fix.
-    exclude: ["e2e/**", "e2e-live/**", "node_modules/**", "dist/**"],
+    // Explicit allowlist: vitest collects only its own tests. Playwright
+    // directories (e2e/, e2e-live/, any future e2e-*/) can never be collected,
+    // so adding one is no longer a landmine — the exclude-list approach broke
+    // twice (dashboard merge, then e2e-live/).
+    include: ["tests/**/*.{test,spec}.{ts,tsx}", "src/**/*.{test,spec}.{ts,tsx}"],
   },
 });
