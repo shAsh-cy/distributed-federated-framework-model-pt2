@@ -557,7 +557,7 @@ def calibrate_noise_multiplier(
     return (lo + hi) / 2.0
 
 
-def aggregator_from_config(config: "object", clients_per_round: int) -> object:
+def aggregator_from_config(config: object, clients_per_round: int) -> object:
     """Build the aggregator a Config's privacy section asks for — ALL of it.
 
     Exists because two of the three execution paths forwarded only the four
