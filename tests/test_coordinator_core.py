@@ -317,3 +317,25 @@ class TestRunnerLifecycle:
         runner = Runner(make_store())
         with pytest.raises(ConfigError):
             runner.start({"data": {"num_clients": 0}})
+
+
+class TestOrphanedRunRecovery:
+    def test_startup_fails_runs_a_dead_process_left_running(self):
+        """Audit finding M1 (docs/audit_v0_2.md): a killed coordinator left
+        its live runs at status 'running' forever — verified against a real
+        docker restart. Startup recovery marks them failed; completed and
+        imported rows are untouched."""
+        store = make_store()
+        dead = store.create_run({}, status="running")
+        pending = store.create_run({}, status="pending")
+        done = store.create_run({}, status="completed")
+        imported = store.create_run({}, source="imported", status="running")
+
+        orphaned = store.fail_orphaned_runs()
+
+        assert set(orphaned) == {dead, pending}
+        assert store.get_run(dead).status == "failed"
+        assert store.get_run(pending).status == "failed"
+        assert store.get_run(done).status == "completed"
+        assert store.get_run(imported).status == "running"
+        assert store.fail_orphaned_runs() == []  # idempotent
