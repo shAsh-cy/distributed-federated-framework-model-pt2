@@ -35,7 +35,10 @@ pytestmark = pytest.mark.slow
 def test_server_starts_and_accepts_connections():
     with ServerHarness() as h:
         channel = grpc.insecure_channel(h.address)
-        grpc.channel_ready_future(channel).result(timeout=10)
+        # result() raising TimeoutError IS this test's assertion: the channel
+        # either reaches READY within 10s or the test fails (audit S1).
+        ready = grpc.channel_ready_future(channel).result(timeout=10)
+        assert ready is None  # future resolves with None exactly on readiness
         channel.close()
 
 

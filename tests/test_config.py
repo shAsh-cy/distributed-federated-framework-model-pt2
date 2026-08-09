@@ -28,7 +28,9 @@ def test_every_shipped_config_is_valid(name):
     path = CONFIG_DIR / name
     if not path.exists():
         pytest.skip(f"{name} not present yet")
-    Config.from_yaml(path)
+    cfg = Config.from_yaml(path)  # ConfigError here IS the failure mode (audit S1)
+    assert cfg.training.rounds >= 1
+    assert cfg.data.num_clients >= 2
 
 
 def test_defaults_are_non_iid():
