@@ -642,7 +642,7 @@ def build_evaluator(model_name: str, test_x: np.ndarray, test_y: np.ndarray, bat
 
 def build_server(config: Config) -> FederatedServer:
     """Assemble a server from a config: model, held-out test set, aggregator."""
-    from .aggregation import compute_epsilon, make_aggregator
+    from .aggregation import aggregator_from_config, compute_epsilon
     from .data import load_federated
     from .models import build_model
 
@@ -650,16 +650,7 @@ def build_server(config: Config) -> FederatedServer:
     LOGGER.info("server holds %d held-out test examples; no client sees them", len(test))
 
     initial_weights = build_model(config.model.name, seed=config.seed).get_weights()
-    aggregator = make_aggregator(
-        dp_enabled=config.privacy.enabled,
-        noise_multiplier=config.privacy.noise_multiplier,
-        l2_clip_norm=config.privacy.l2_clip_norm,
-        clients_per_round=config.clients_per_round,
-        adaptive_clipping=config.privacy.adaptive_clipping,
-        adaptive_target_quantile=config.privacy.adaptive_target_quantile,
-        adaptive_learning_rate=config.privacy.adaptive_learning_rate,
-        adaptive_clipped_count_stddev=config.privacy.adaptive_clipped_count_stddev,
-    )
+    aggregator = aggregator_from_config(config, config.clients_per_round)
 
     epsilon_fn = None
     if config.privacy.enabled:
@@ -731,6 +722,18 @@ def main(argv: list[str] | None = None) -> int:
     if metrics:
         final = metrics[-1]
         LOGGER.info("final accuracy %.4f after %d rounds", final.accuracy, len(metrics))
+
+    if config.training.checkpoint_path:
+        from .checkpoint import save_checkpoint
+
+        written = save_checkpoint(
+            config.training.checkpoint_path,
+            server.global_weights(),
+            model_name=config.model.name,
+            config=config.to_dict(),
+            metadata={"rounds_completed": len(metrics)},
+        )
+        LOGGER.info("wrote final model checkpoint to %s", written)
 
     if args.metrics_out:
         # The Docker image has no results/ directory, and losing a completed run

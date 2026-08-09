@@ -397,3 +397,43 @@ class TestDPAcrossThreads:
             thread.join(timeout=120)
 
         assert results == [None, None], results
+
+
+class TestAggregatorFromConfig:
+    def test_adaptive_config_is_honoured_on_every_path(self):
+        """Audit finding M3 (docs/audit_v0_2.md): two of three execution
+        paths dropped the adaptive_* fields on the floor, so an adaptive
+        config silently ran fixed clipping. All paths now build through
+        aggregator_from_config, which forwards the whole privacy section."""
+        from fl.aggregation import AdaptiveDPFedAvgAggregator, aggregator_from_config
+        from fl.config import Config
+
+        cfg = Config.from_dict(
+            {
+                "privacy": {
+                    "enabled": True,
+                    "noise_multiplier": 1.1,
+                    "l2_clip_norm": 2.0,
+                    "adaptive_clipping": True,
+                    "adaptive_target_quantile": 0.4,
+                }
+            }
+        )
+        agg = aggregator_from_config(cfg, clients_per_round=50)
+        assert isinstance(agg, AdaptiveDPFedAvgAggregator)
+        assert agg.target_quantile == 0.4
+        assert agg.initial_l2_clip_norm == 2.0
+
+    def test_fixed_and_plain_paths_unchanged(self):
+        from fl.aggregation import aggregator_from_config
+        from fl.config import Config
+
+        fixed = aggregator_from_config(
+            Config.from_dict(
+                {"privacy": {"enabled": True, "noise_multiplier": 2.0, "l2_clip_norm": 0.5}}
+            ),
+            clients_per_round=5,
+        )
+        assert isinstance(fixed, DPFedAvgAggregator)
+        plain = aggregator_from_config(Config.from_dict({}), clients_per_round=5)
+        assert isinstance(plain, FedAvgAggregator)

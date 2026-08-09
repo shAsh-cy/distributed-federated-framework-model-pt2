@@ -557,6 +557,31 @@ def calibrate_noise_multiplier(
     return (lo + hi) / 2.0
 
 
+def aggregator_from_config(config: "object", clients_per_round: int) -> object:
+    """Build the aggregator a Config's privacy section asks for — ALL of it.
+
+    Exists because two of the three execution paths forwarded only the four
+    basic privacy fields to :func:`make_aggregator`, so
+    ``privacy.adaptive_clipping: true`` silently ran FIXED clipping on the
+    coordinator and one-shot experiment paths while reporting the config it
+    did not honour (audit finding M3, docs/audit_v0_2.md). Every path now
+    routes through this one constructor. ``config`` is the typed
+    :class:`fl.config.Config`; duck-typed here to keep this module free of a
+    config import.
+    """
+    privacy = config.privacy
+    return make_aggregator(
+        dp_enabled=privacy.enabled,
+        noise_multiplier=privacy.noise_multiplier,
+        l2_clip_norm=privacy.l2_clip_norm,
+        clients_per_round=clients_per_round,
+        adaptive_clipping=privacy.adaptive_clipping,
+        adaptive_target_quantile=privacy.adaptive_target_quantile,
+        adaptive_learning_rate=privacy.adaptive_learning_rate,
+        adaptive_clipped_count_stddev=privacy.adaptive_clipped_count_stddev,
+    )
+
+
 def make_aggregator(
     *,
     dp_enabled: bool,
