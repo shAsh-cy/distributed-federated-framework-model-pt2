@@ -59,12 +59,12 @@ def predict_tf(weights: list[np.ndarray], model_name: str, x: np.ndarray) -> np.
 def predict_torch(weights: list[np.ndarray], model_name: str, x: np.ndarray) -> np.ndarray:
     import torch
 
-    from fl.adapters import TorchAdapter
+    from fl.adapters import make_adapter
     from fl.archspec import SPECS, build_torch
 
     spec = SPECS[model_name]
     net = build_torch(spec)
-    TorchAdapter(spec).from_canonical(net, weights)
+    make_adapter("torch", spec).from_canonical(net, weights)
     net.eval()
     with torch.no_grad():
         nchw = torch.from_numpy(np.ascontiguousarray(x.transpose(0, 3, 1, 2)))
