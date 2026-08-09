@@ -10,6 +10,31 @@ are committed: [`results/`](results/) for the three shipped configurations,
 [`docs/`](docs/) (`_*.json`) for the sweep, control, replication and diagnosis
 data.
 
+**Headlines at v0.2**, each with its full write-up below:
+
+| What | Measured |
+|---|---|
+| Fashion-MNIST, 10 clients, 20 rounds, no DP | **86.9 %** (recorded run, reproduced exactly) |
+| — with client-level DP at ε = 6.228, corrected clip | **DP costs ≈ 3.5–4.5 pp** across two independent 3-seed draws |
+| FEMNIST, 1,000 real writers, no DP | **72.8 %** at 20 rounds → **80.4 %** at 100 (3 seeds) |
+| — with DP at ε = 6.228, re-bracketed clip | **68.2 %** — DP costs **4.6 pp**, ≈ a third of federation's own 12.8 pp |
+| Mixed TensorFlow + PyTorch client pool | within **0.36 pp** of pure-TF (3 seeds each) |
+| Adaptive clipping, six-phase comparison | **holds** a tuned clip, does **not find** one — fixed stays default |
+| Secure aggregation (teaching, protocol level) | bit-exact masked sums, dropout recovery, **≈ 2×** comm cost |
+| Every completed run | leaves a **checkpoint** both frameworks load, argmax-identical |
+
+![The dashboard driving a real differentially-private run](docs/dashboard_live.gif)
+
+*Recorded live at 8× speed, not mocked: a DP run configured in the browser,
+trained by the coordinator, streamed over a real WebSocket — the topology,
+curves and privacy-budget meter draw from real events end to end.*
+
+Design rationale — every major decision and the alternative it beat — lives in
+**[docs/architecture.md](docs/architecture.md)**, which ends with
+[what the v0.2 audit found](docs/architecture.md#what-the-audit-found--three-bugs-unit-tests-structurally-could-not-catch):
+three integration bugs a green unit suite structurally could not catch, kept
+on the record because they are the most instructive thing here.
+
 ---
 
 ## The problem this solves
@@ -68,7 +93,22 @@ flowchart TB
         DP --> GM
         GM --> EV
         TEST --> EV
+        GM --> CKPT[("Final model checkpoint<br/>.npz — loads in TF and torch<br/>fl/checkpoint.py")]
     end
+
+    subgraph obs["Coordinator + dashboard — observability, separate process, same fl/* core"]
+        direction LR
+        RN["Runner<br/>in-process rounds over fl/*"]
+        DB[("SQLite<br/>replayable event log")]
+        API["Coordinator API<br/>FastAPI: REST + WebSocket"]
+        UI["Browser dashboard<br/>topology · curves · ε meter"]
+        RN --> DB
+        DB --> API
+        API -->|"JSON events — never weights"| UI
+    end
+
+    SEC["Pairwise-masking secure aggregation<br/>fl/secure_aggregation.py — protocol level,<br/>tested, NOT yet wired into either path"]
+    SEC -.->|"would hide individual updates"| AGG
 
     C1 -->|"weights + sample count + model version"| RX
     CN -->|"weights + sample count + model version"| RX
@@ -82,7 +122,12 @@ flowchart TB
 
 Links ending in **✕** are the paths that deliberately do not exist: no client
 data reaches the server, and no test data reaches a client. Only model weights,
-a sample count and a model version cross the wire.
+a sample count and a model version cross the wire. The observability layer is
+a second protocol on purpose — JSON events outward, never weights — and the
+dashed secure-aggregation link marks the one component implemented and tested
+but not yet wired into either training path. Every completed run writes a
+checkpoint both frameworks can load. The reasoning behind each of these
+seams: [docs/architecture.md](docs/architecture.md).
 
 **One round:** the server samples a fraction `C` of registered clients → publishes
 the global weights and their version → opens a barrier with a wall-clock deadline
@@ -655,73 +700,46 @@ rejected outright. ε is not a config field.
 
 ## Limitations
 
-Stated plainly, because each of these is a real boundary of what was built.
+Shorter than at v0.1, deliberately — and the shrinkage is accounted for, not
+hidden. Of v0.1's five limitations, the substance of three **moved into
+Results**: "one seed per cell" became the multi-seed-with-ranges discipline
+every figure above now follows (the measured 4.7–29.5-point single-draw
+spread survives in *Results* and dp_diagnosis §10 as the yardstick claims are
+judged against; what remains is a property, not a gap — TFF draws DP noise
+unseedably, so DP runs reproduce in distribution, not bit-for-bit); "secure
+aggregation is not implemented" became a tested protocol-level
+implementation whose *wiring* remains open below; and "benchmark data only"
+gained its counterweight in the natural 1,000-writer FEMNIST population.
+What remains true:
 
 - **Clients are simulated containers on one host, not genuinely separate
-  devices.** `docker compose --scale client=5` starts five processes on a single
-  machine communicating over a local Docker network. The gRPC transport, the
-  registration handshake, the round deadlines and the serialisation costs are all
-  real; the *physical* distribution is not. Nothing here has been run across
-  actual remote hosts, unreliable links, or heterogeneous hardware.
+  devices.** The gRPC transport, registration handshake, round deadlines and
+  serialisation costs are real; the *physical* distribution is not — no
+  remote hosts, unreliable links, or heterogeneous hardware.
 
-- **Fashion-MNIST is a benchmark dataset.** It is small, clean, balanced,
-  centrally available and already labelled — none of which is true of the private,
-  messy, unbalanced data that motivates federated learning in practice. The
-  non-IID split is *synthetic*: a Dirichlet partition of a public dataset, not
-  naturally occurring per-party heterogeneity. Results here say nothing about how
-  the method performs on real federated data.
+- **Benchmark image data, at measured operating points.** Fashion-MNIST is
+  small, clean and balanced, with *synthetic* Dirichlet heterogeneity;
+  FEMNIST adds real per-writer heterogeneity but is the seeded 1,000-writer
+  subsample of 3,400, carries a pinned upstream quirk (0.84 % test-image
+  duplication, bounded below 1 % by test), and every recorded number is an
+  in-process-harness result at its stated budget — the FEMNIST DP cost
+  (4.6 pp at ε = 6.228) is measured at E = 10, R = 20, m = 200, and the
+  R = 100 curve has no DP arm.
 
-- **The deployed training paths still show the server every individual
-  update.** Pairwise-masking secure aggregation is now implemented and tested
-  at the protocol level ([fl/secure_aggregation.py](fl/secure_aggregation.py),
-  a clearly-marked teaching implementation:
-  [docs/secure_aggregation.md](docs/secure_aggregation.md)) — the server
-  observes only masked vectors, dropout mid-round and during recovery are
-  handled, and the unmasked sum is bit-exact. But it is not wired into the
-  gRPC transport or the TFF path, so in every run this repo records, updates
-  still arrive as plaintext weights. Composing it with the DP path is a real
-  protocol change, not a flag: the TFF aggregator clips and noises centrally,
-  after seeing individual updates, and masking requires client-side clipping
-  with distributed noise.
-
-- **One seed per cell across the main sweep, and DP runs do not reproduce at a
-  fixed seed** (see *Results* for why). Measured run-to-run spread is
-  **4.7–29.5 accuracy points** depending on cohort size, so comparisons below
-  roughly 10 points are not resolved by this data. What survives the spread: the
-  clipping-norm collapse, ≈ 55 pp at about 2× the worst-case spread, and the
-  clip-as-step-size mechanism, 32 pp at about 7×. What was retracted: the
-  `S` = 0.5-over-`S` = 1.1 ranking at m ≥ 50, where differences of 0.5–8.2 pp are
-  within noise. The one exception is the winning cell, replicated at three seeds
-  per arm with a spread of 1.1 pp.
-
-- **There is no adversarial or Byzantine client handling.** Malformed payloads,
-  NaN/Inf weights, wrong shapes, stale versions and unregistered senders are all
-  rejected — but those are integrity checks, not a threat model. A well-formed
-  malicious update within the clipping norm is aggregated like any other. There is
-  no update-poisoning detection, no robust aggregation rule (no median, trimmed
-  mean or Krum), no client reputation, and no authentication: any process that can
-  reach the port can register and contribute. Secure aggregation, once wired in,
-  *widens* this rather than narrowing it: masking constrains nothing about the
-  aggregate's contents, and robust rules that inspect individual updates are
-  incompatible with masking as-is
+- **No adversarial or Byzantine client handling.** Malformed payloads and
+  stale versions are rejected — integrity checks, not a threat model. A
+  well-formed malicious update aggregates like any other; there is no robust
+  aggregation rule and no authentication. Secure aggregation, once wired in,
+  *widens* this: masking constrains nothing about the aggregate and is
+  incompatible with rules that inspect individual updates
   ([docs/secure_aggregation.md](docs/secure_aggregation.md)).
 
-- **The FEMNIST results are harness results, at one working operating
-  point.** The dataset swaps by config alone and the gRPC path accepts
-  `configs/femnist.yaml`, but every recorded FEMNIST number comes from the
-  in-process harness (`scripts/femnist_experiments.py`) — nobody has started
-  1,000 client containers on one host. The DP cost figure (4.6 pp at
-  ε = 6.228) is measured at E = 10, R = 20, m = 200 with a clip bracketed at
-  one seed; other budgets, cohorts and rounds may price DP differently — the
-  R = 100 curve, in particular, has no DP arm. And the population is the
-  seeded 1,000-writer subsample throughout, not the full 3,400-writer set.
-
-- **The FEMNIST source data carries a small upstream quirk**, found while
-  testing and pinned rather than hidden: 0.84 % of test images are
-  byte-identical to a train image after uint8 quantisation (minimal-ink
-  glyphs; the train split internally holds 2,732 byte-duplicates, so it is
-  LEAF/TFF preprocessing, not this repo's packing — which adds none). A test
-  bounds the rate below 1 % so a packing regression fails loudly.
+- **Secure aggregation exists at protocol level, not in the deployed
+  paths.** Every recorded run still moves plaintext weights; the server
+  reads each update before averaging. Composing masking with the DP path is
+  a protocol change, not a flag — the TFF aggregator clips and noises
+  centrally, and true composition needs client-side clipping with
+  distributed noise ([docs/architecture.md](docs/architecture.md)).
 
 Also true, and smaller: channels are `insecure_channel` with no TLS; server state
 is in memory and does not survive a restart (clients re-register and reclaim their
