@@ -175,6 +175,16 @@ comment.
 `fl/serialization.py:80 weights_fingerprint` — referenced only by tests,
 documented nowhere.
 
+**Resolution (recorded after re-reading the code):** the finding was
+over-called for two of the three. `uniform_average`'s docstring states it is
+"kept as a named function so the difference from weighted_average is
+explicit and directly testable" — it is the executable half of the README's
+weighted-vs-unweighted signature test, deliberate test-facing API.
+`weights_fingerprint` is the declared bit-identity primitive of the wire
+round-trip tests. Both stay. `make_adapter` gains a production caller:
+`scripts/predict.py` uses it to load checkpoints into the torch model (M2's
+fix), which is what a factory like it was for.
+
 ## What passed (verified, no findings)
 
 - **Fresh clone** (GitHub, `abcd216`): mode bits exactly right (three `.sh`

@@ -818,6 +818,10 @@ figure is stable under re-running.
 
 ### Correction to a claim in README.md
 
+> **Note (v0.2 audit, finding D1):** the README sentence corrected below has
+> since been removed from README.md entirely. This section stays as the
+> record of why it was wrong; do not go looking for the quoted text there.
+
 The README states that usable client-level DP here "needs **m ≳ z·√d**, roughly
 950 clients per round". That figure came from setting the per-round
 signal-to-noise ratio to 1, using the clipping norm (3.0) as the signal.

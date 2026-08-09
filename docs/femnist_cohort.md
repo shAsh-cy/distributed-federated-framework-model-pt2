@@ -201,13 +201,22 @@ clip optimum to locate at an operating point where noise is not the binding
 constraint** — the no-DP control (§4) already showed noiseless FedAvg equally
 stuck, so no amount of noise reduction via the clip can help. Contrast
 Fashion-MNIST, where noise *was* binding and the same 6× clip change moved
-final accuracy by 63 points.
+final accuracy by ≈ 55 points (an earlier draft said 63.5, measured against
+one low draw; dp_diagnosis.md's survival analysis corrected it to the
+four-draw mean).
+
+> **Re-scoped since this was written** (audit finding D3): the paragraph
+> above is a statement about the stalled regime only —
+> [femnist_budget.md](femnist_budget.md) §5 re-scopes it explicitly, and at
+> the working budget the clip optimum was subsequently located
+> ([adaptive_clipping.md](adaptive_clipping.md), phase A: S = 2.0).
 
 The Fashion finding ("the optimum lies below 0.5, unbracketed") is therefore
 neither confirmed nor refuted here: it was a claim about a noise-bound regime,
 and this operating point never enters that regime. Bracketing the clip
-optimum on FEMNIST first requires a budget at which FEMNIST trains (see the
-roadmap).
+optimum on FEMNIST first required a budget at which FEMNIST trains — since
+found ([femnist_budget.md](femnist_budget.md): E = 10), after which the
+bracket ran ([adaptive_clipping.md](adaptive_clipping.md), phase A).
 
 ## 6. What this says about the Fashion-MNIST curve
 
@@ -252,8 +261,12 @@ python scripts/prepare_femnist.py     # one-time: ~170 MB download, packs to dat
 python scripts/femnist_experiments.py --experiment entropy      --out docs/_femnist_entropy.json  > e.log 2>&1
 python scripts/femnist_experiments.py --experiment baseline     --out docs/_femnist_baseline.json > b.log 2>&1
 python scripts/femnist_experiments.py --experiment sweep        --out docs/_femnist_sweep.json    > s.log 2>&1
-python scripts/femnist_experiments.py --experiment clip_bracket --m <winner> --out docs/_femnist_bracket.json > c.log 2>&1
+python scripts/femnist_experiments.py --experiment clip_bracket --m 200 --out docs/_femnist_bracket.json > c.log 2>&1
+python scripts/femnist_experiments.py --experiment nodp_control --cohorts 50,500 --out docs/_femnist_nodp.json > n.log 2>&1
 ```
+
+(The last command is the §3 federated no-DP control, previously the one
+table here without a named data file — audit finding D5.)
 
 Raw per-round data for every run is committed as `docs/_femnist_*.json`.
 Do not pipe the script's stdout into a command that waits for EOF (TFF leaves

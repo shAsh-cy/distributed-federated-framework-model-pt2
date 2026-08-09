@@ -251,9 +251,12 @@ events persist to SQLite (SQLAlchemy + Alembic), so history survives
 restarts. The API never blocks on training: each run is a thread pushing
 events; the API is a consumer.
 
-**History on first launch.** `coordinator.importer.import_history` loads the
-repo's committed result files — 97 runs on the current tree, 82 with genuine
-per-round event streams. Runs with recorded histories replay as events;
+**History import.** `python -m coordinator.importer` loads the repo's
+committed result files into the coordinator's database — 141 runs on the
+current tree, 119 with genuine per-round event streams. It is a one-time,
+idempotent command, not an automatic startup step: a fresh API serves an
+empty history until you run it (this paragraph previously claimed "on first
+launch"; audit finding D9). Runs with recorded histories replay as events;
 summary-only records import as completed runs with final metrics; nothing
 fabricates client-level events the files never recorded; multi-seed cells
 keep per-seed runs plus a summary row that preserves mean *and range*. All
@@ -511,7 +514,10 @@ inside seed ranges — warm-started at the bracket answer, so it shows the
 estimator *holds* a tuned clip), a trail on Fashion (70.1 % vs 72.4 %)** —
 the estimator tracks the median faithfully, and on Fashion the tuned
 optimum is a *binding* clip below the median, so tracking the median is
-the wrong target there. The follow-ups sharpened both edges: cold-started
+the wrong target there. (That 72.4 % fixed arm is an independent
+re-measurement of the same cell the replication above recorded at 73.4 % —
+DP noise is unseedable here, and the two three-seed draws differ by 1.0 pp
+with overlapping ranges. Both are recorded; neither is "the" number.) The follow-ups sharpened both edges: cold-started
 from TFF's 0.1 default (FEMNIST, R = 100, one seed) the clip needs 31
 rounds to reach the bracket answer, then **overshoots to the median and
 never catches the matched fixed arm (54.8 % vs 62.4 % at round 100)** —
@@ -607,8 +613,11 @@ python scripts/femnist_experiments.py --experiment sweep --out docs/_femnist_swe
 
 The first command caches the LEAF-derived federated EMNIST locally (`data/` is
 gitignored); the second reproduces the decoupled cohort sweep. See
-[docs/femnist_cohort.md](docs/femnist_cohort.md) for all experiments and the
-same no-EOF-pipe warning that applies to every TFF-touching script here.
+[docs/femnist_cohort.md](docs/femnist_cohort.md) for the cohort experiments —
+the budget, adaptive-clipping and DP-at-budget experiments carry their own
+Reproducing blocks in [docs/femnist_budget.md](docs/femnist_budget.md) and
+[docs/adaptive_clipping.md](docs/adaptive_clipping.md) — and the same
+no-EOF-pipe warning that applies to every TFF-touching script here.
 
 ### Tests
 
@@ -616,7 +625,8 @@ same no-EOF-pipe warning that applies to every TFF-touching script here.
 pytest --cov=fl --cov-report=term-missing
 ```
 
-**342 tests, 92 % statement coverage (fl/ + coordinator/)**, run on every push by GitHub Actions
+**378 tests, 93 % statement coverage (fl/ + coordinator/**, measured by the
+same `pytest --cov` command below in the dev image), run on every push by GitHub Actions
 alongside `ruff check` and `ruff format --check`. Four core areas, one file
 each: `tests/test_rpc.py` (transport, bit-identical weight round-trip,
 oversized and malformed payloads), `tests/test_aggregation.py` (FedAvg
@@ -769,8 +779,8 @@ limitation stated above and contradicts no claim made above it.
   exercise real network latency, partitions and heterogeneous clients.
 - **Persistent server state**, so a restart resumes at the current model version
   instead of resetting to 0.
-- **More datasets and architectures**, beyond the single `fashion_mnist` /
-  `small_cnn` pair the config currently accepts.
+- **More datasets and architectures**, beyond the two pairs the config
+  accepts today (`fashion_mnist`/`small_cnn`, `femnist`/`femnist_cnn`).
 
 > **Differential privacy is not on this roadmap because it is implemented.**
 > Client-level DP via TFF, with ε computed by TensorFlow Privacy's accountant, is
