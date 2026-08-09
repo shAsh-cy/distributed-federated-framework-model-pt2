@@ -335,3 +335,27 @@ def import_history(store: EventStore, root: str | Path = ".") -> dict:
     result = {"imported_runs": imported, "skipped": skipped_files}
     LOGGER.info("history import: %s", result)
     return result
+
+
+def main() -> int:
+    """CLI entry point: import the repo's committed results into the default DB.
+
+    ``python -m coordinator.importer`` — idempotent; re-running skips
+    already-imported labels. Exists because the README promised history
+    "on first launch" while nothing ever invoked this module (audit finding
+    D9, docs/audit_v0_2.md).
+    """
+    import logging as _logging
+
+    from .db import create_all, make_engine
+
+    _logging.basicConfig(level=_logging.INFO, format="%(levelname)s %(message)s")
+    engine = make_engine()
+    create_all(engine)
+    result = import_history(EventStore(engine))
+    LOGGER.info("done: %s", result)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
