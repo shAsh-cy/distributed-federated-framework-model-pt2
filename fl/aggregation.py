@@ -202,6 +202,50 @@ class FedAvgAggregator:
         return weighted_average(updates)
 
 
+class FedOptAggregator:
+    """FedOpt (Reddi et al. 2021): weighted FedAvg delta + a server optimizer.
+
+    The round's weighted average is computed exactly as
+    :class:`FedAvgAggregator` computes it; the difference is what happens
+    next. Instead of *becoming* the global model, the averaged weights are
+    read as a pseudo-gradient ``delta = avg - w_global`` and handed to a
+    server optimizer (:mod:`fl.server_optimizer`) whose per-parameter state
+    -- momentum for FedAvgM, first and second moments for FedAdam/FedYogi --
+    persists across rounds. That state is why the optimizer is owned here,
+    by the object that lives for the whole run, and not rebuilt per round.
+
+    Arithmetic is float64 end to end (average -> delta -> step -> apply),
+    cast to float32 only at the model boundary. With the identity optimizer
+    (SGD, lr=1.0, no momentum) the result is bit-for-bit
+    :class:`FedAvgAggregator`'s output -- asserted in the tests, which is
+    what makes this a strict generalisation rather than a parallel path.
+
+    No DP composition here: the weighted average has unbounded per-client
+    sensitivity, so wrapping this in noise would be accounting fiction.
+    :func:`make_aggregator` refuses the combination outright.
+    """
+
+    def __init__(self, optimizer: object) -> None:
+        self._optimizer = optimizer
+        self.name = str(optimizer.name)
+
+    def aggregate(self, updates: list[ClientUpdate], global_weights: Weights) -> Weights:
+        averaged = weighted_average(updates)
+        anchors = [np.asarray(g, dtype=np.float64) for g in global_weights]
+        delta = [
+            np.asarray(a, dtype=np.float64) - g for a, g in zip(averaged, anchors, strict=True)
+        ]
+        step = self._optimizer.step(delta)
+        return [
+            (g + np.asarray(s, dtype=np.float64)).astype(np.float32)
+            for g, s in zip(anchors, step, strict=True)
+        ]
+
+    def reset(self) -> None:
+        """Drop the optimizer's cross-round state (a new run's clean slate)."""
+        self._optimizer.reset()
+
+
 def _ensure_tff_context() -> None:
     """Install a TFF execution context for the CURRENT thread if it has none.
 
@@ -592,11 +636,47 @@ def make_aggregator(
     adaptive_target_quantile: float = 0.5,
     adaptive_learning_rate: float = 0.2,
     adaptive_clipped_count_stddev: float | None = None,
+    server_optimizer: str = "fedavg",
+    server_learning_rate: float = 1.0,
+    server_momentum: float = 0.9,
+    server_beta1: float = 0.9,
+    server_beta2: float = 0.99,
+    server_tau: float = 1e-3,
 ) -> Aggregator:
     """Build the aggregator a config asks for. Fixed clipping is the default;
-    the adaptive path is opt-in and l2_clip_norm becomes its initial estimate."""
+    the adaptive path is opt-in and l2_clip_norm becomes its initial estimate.
+
+    ``server_optimizer`` selects the FedOpt family member applied to the
+    aggregated delta (fl/server_optimizer.py); plain ``fedavg`` at server
+    learning rate 1.0 -- the identity -- short-circuits to
+    :class:`FedAvgAggregator` itself, so the default path is byte-identical
+    to what it always was.
+    """
+    if dp_enabled and (server_optimizer != "fedavg" or server_learning_rate != 1.0):
+        # The refusal is deliberate, not an oversight. Applying a server
+        # optimizer to the NOISED mean delta would be sound DP post-processing,
+        # but this repo has not wired or measured that composition; silently
+        # running it would produce results no documented experiment backs.
+        raise ValueError(
+            "server_optimizer is not supported together with differential privacy: "
+            f"got server_optimizer={server_optimizer!r} (lr={server_learning_rate}) with "
+            "dp_enabled=True. Run FedOpt without DP, or DP with the plain FedAvg server step."
+        )
     if not dp_enabled:
-        return FedAvgAggregator()
+        if server_optimizer == "fedavg" and server_learning_rate == 1.0:
+            return FedAvgAggregator()
+        from .server_optimizer import make_server_optimizer
+
+        return FedOptAggregator(
+            make_server_optimizer(
+                server_optimizer,
+                learning_rate=server_learning_rate,
+                momentum=server_momentum,
+                beta1=server_beta1,
+                beta2=server_beta2,
+                tau=server_tau,
+            )
+        )
     if adaptive_clipping:
         return AdaptiveDPFedAvgAggregator(
             noise_multiplier=noise_multiplier,
