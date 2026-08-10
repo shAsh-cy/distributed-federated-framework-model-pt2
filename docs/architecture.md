@@ -42,6 +42,71 @@ the weighted-vs-unweighted signature test (README, Tests) and the
 DP-equal-weighting rule exist because of it. The cost of the alternative
 would have been the system reducing to a notebook.
 
+## TFF is stalled upstream, and the dependency is three call sites wide
+
+**The upstream state, precisely.** TFF's last PyPI release is 0.87.0 (17
+Sep 2024) and its last GitHub *release* is 0.88.0 (26 Sep 2024); a v0.89.0
+tag was cut on 31 Oct 2024 and never published to either. Nothing has
+shipped since. It is **not** deprecated and **not** archived — the
+repository is open, carries no deprecation notice, and commits still land
+through Google's Copybara export (most recent at the time of writing:
+3 Aug 2026). The accurate word is *stalled*, and it applies to the release
+cadence rather than to the project: "dead" is the easier line and the
+wrong one.
+
+**What the stall costs here.** 0.87.0 declares `>=3.9,<3.12` and ships one
+wheel per release, `manylinux_2_31_x86_64` — no Windows, macOS or aarch64
+artifact at any version, which is why non-Linux work goes through Docker
+or WSL2. It pins `tensorflow==2.14.1`, and its exact `jaxlib==0.4.14` pin
+has since been removed from PyPI, so `requirements.txt` carries a
+`--find-links` line into Google's historical index purely to stay
+resolvable. The cost a reader can verify fastest is the one already in
+*Limitations*: **torch is pinned at 2.0.1 because TFF pins
+`typing-extensions==4.5.*`**, and torch ≥ 2.1 requires ≥ 4.8. The same pin
+propagates into the API stack — pydantic stays on 1.x, so fastapi stays
+below 0.100.
+
+**None of which touches the algorithm layer, which is the point.** This
+project never adopted TFF's federated-algorithm stack. FedAvg is
+hand-written numpy (`weighted_average` in `fl/aggregation.py`, float64
+accumulation); the transport is this repo's own `.proto` and gRPC server;
+the wire format is framework-neutral float32 tensors the aggregator
+consumes without conversion. On the training path TFF is load-bearing in
+exactly three places:
+
+| TFF surface | Used by | Replacing it |
+|---|---|---|
+| `DifferentiallyPrivateFactory.gaussian_fixed` | `DPFedAvgAggregator` | Clip each delta to `S`, sum, add `N(0, (zS)²)`, divide by `m`. The deltas and `l2_norm` already exist here; what would be taken on is the noise draw and the cross-round state `AggregationProcess` holds. Flower's `DifferentialPrivacyServerSideFixedClipping` is the direct equivalent. |
+| `DifferentiallyPrivateFactory.gaussian_adaptive` | `AdaptiveDPFedAvgAggregator` | The real work: a geometric quantile estimator (Andrew et al. 2021) and the noise split it forces. The split is already derived and tested here (`adaptive_noise_breakdown`), so the accounting is understood; the estimator is not written. Flower ships `DifferentialPrivacyServerSideAdaptiveClipping`. |
+| `dp_accounting` for ε | `compute_epsilon` | Nothing. `dp-accounting` is a separate PyPI package that TFF pins rather than contains, and is imported directly; dropping TFF leaves `compute_epsilon` untouched. |
+
+One further use sits off the training path: `prepare_femnist_cache`
+(`fl/data.py`) calls `tff.simulation.datasets.emnist.load_data` once to
+build the FEMNIST cache, and every run afterwards reads the packed
+`.npz`. It costs nothing until that cache must be rebuilt.
+
+That the seam is this narrow is not luck. The `Aggregator` protocol takes
+`list[ClientUpdate]` and returns `Weights` — plain float32 arrays, nothing
+TF-shaped crossing it. Framework-blind aggregation is what leaves the
+server unable to tell a TensorFlow client from a PyTorch one (*One
+canonical wire format*, above), and a server that cannot see a client's
+framework cannot see its aggregator's either. The property bought for the
+mixed-framework result is the same one that confines TFF to three call
+sites.
+
+**The alternative, if it is ever needed.** Flower is the maintained
+option: framework-agnostic by design, releasing roughly monthly (1.26.0 in
+Feb 2026 through 1.33.0 in Jul 2026), pure-Python wheels, with DP built in
+(fixed and adaptive clipping, server- and client-side) and secure
+aggregation (`SecAggWorkflow`, `SecAggPlusWorkflow`) — the latter
+something this repo currently implements itself. It requires Python
+≥ 3.11, where TFF stops; the two overlap on 3.11 alone.
+
+**No migration is planned.** The pinned stack works, resolves
+reproducibly, and its costs are recorded rather than waiting to be
+discovered. This entry prices the dependency; it does not schedule its
+removal.
+
 ## Client-level DP, not example-level
 
 **Chosen:** the protected unit is one client's entire dataset —

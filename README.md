@@ -173,6 +173,15 @@ network.
 | Architecture spec, framework adapters | this repo — `fl/archspec.py`, `fl/adapters.py` |
 | Model, data loading, non-IID partitioning | this repo — `fl/models.py`, `fl/data.py` |
 
+**Is TFF still maintained?** Worth asking before adopting this stack, and
+the honest answer is *stalled, not dead*: no release since 0.87.0 (Sep
+2024), but neither deprecated nor archived. It costs this repo a Python
+and platform ceiling and the torch 2.0.1 pin recorded in *Limitations* —
+and, because the table above is a real division of labour rather than a
+diagram, it is confined to three call sites rather than woven throughout.
+Both halves of that, with the maintained alternative, are in
+[docs/architecture.md](docs/architecture.md#tff-is-stalled-upstream-and-the-dependency-is-three-call-sites-wide).
+
 ---
 
 ## One federation, two frameworks
