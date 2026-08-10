@@ -120,9 +120,20 @@ class TrainingConfig:
     #: (fl/checkpoint.py). None disables the write on the gRPC and one-shot
     #: experiment paths; the coordinator always checkpoints per run id.
     checkpoint_path: str | None = None
+    #: FedProx proximal coefficient mu (Li et al., MLSys 2020). When > 0 every
+    #: client adds (mu/2)*||w - w_global||^2 to its local objective, which
+    #: bounds how far local training can drift from the round's starting
+    #: model. 0 disables the term: the local objective is exactly FedAvg's.
+    #: Server-dictated per round (GetGlobalModelResponse.proximal_mu), like
+    #: the other local hyperparameters.
+    fedprox_mu: float = 0.0
 
     def validate(self) -> None:
         _require(self.rounds >= 1, f"training.rounds must be >= 1, got {self.rounds}")
+        _require(
+            self.fedprox_mu >= 0.0,
+            f"training.fedprox_mu must be >= 0, got {self.fedprox_mu}",
+        )
         _require(
             self.checkpoint_path is None or str(self.checkpoint_path).strip() != "",
             "training.checkpoint_path must be a non-empty path or omitted",

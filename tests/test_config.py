@@ -318,3 +318,11 @@ def test_replace_can_switch_server_optimizer():
     swapped = cfg.replace(server_optimizer={"name": "fedavgm", "momentum": 0.99})
     assert swapped.server_optimizer.name == "fedavgm"
     assert swapped.server_optimizer.momentum == 0.99
+
+
+def test_fedprox_mu_defaults_to_zero_and_rejects_negative():
+    assert Config.from_dict({}).training.fedprox_mu == 0.0
+    cfg = Config.from_dict({"training": {"fedprox_mu": 0.01}})
+    assert cfg.training.fedprox_mu == 0.01
+    with pytest.raises(ConfigError, match=r"training\.fedprox_mu"):
+        Config.from_dict({"training": {"fedprox_mu": -0.1}})

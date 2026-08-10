@@ -44,17 +44,38 @@ class RegistrationError(RuntimeError):
 
 class _TFTrainer:
     """Local training on Keras. Canonical weights are Keras-native, so no
-    conversion happens here — the TF adapter is the layout identity."""
+    conversion happens here — the TF adapter is the layout identity.
+
+    With ``proximal_mu > 0`` the plain ``model.fit`` is swapped for the
+    FedProx loop (fl/fedprox.py), which optimises the same model with the
+    same optimizer plus the proximal term. The prox trainer is built once
+    per mu and reused across rounds — its train step is a traced
+    ``tf.function``, and retracing it every round would dominate run time.
+    """
 
     def __init__(self, model_name: str, learning_rate: float, momentum: float) -> None:
         from .models import build_model, compile_for_training
 
         self._model = compile_for_training(build_model(model_name), learning_rate, momentum)
+        self._prox = None
 
     def fit(
-        self, weights: Weights, x: np.ndarray, y: np.ndarray, epochs: int, batch_size: int
+        self,
+        weights: Weights,
+        x: np.ndarray,
+        y: np.ndarray,
+        epochs: int,
+        batch_size: int,
+        proximal_mu: float = 0.0,
     ) -> tuple[Weights, float, float]:
         self._model.set_weights(weights)
+        if proximal_mu > 0.0:
+            from .fedprox import TFProximalTrainer
+
+            if self._prox is None or self._prox.mu != proximal_mu:
+                self._prox = TFProximalTrainer(self._model, proximal_mu)
+            loss, accuracy = self._prox.fit(x, y, epochs=epochs, batch_size=batch_size)
+            return self._model.get_weights(), loss, accuracy
         history = self._model.fit(x, y, epochs=epochs, batch_size=batch_size, verbose=0)
         loss = float(history.history["loss"][-1])
         accuracy = float(history.history.get("accuracy", [float("nan")])[-1])
@@ -89,11 +110,23 @@ class _TorchTrainer:
         self._x_nchw: np.ndarray | None = None
 
     def fit(
-        self, weights: Weights, x: np.ndarray, y: np.ndarray, epochs: int, batch_size: int
+        self,
+        weights: Weights,
+        x: np.ndarray,
+        y: np.ndarray,
+        epochs: int,
+        batch_size: int,
+        proximal_mu: float = 0.0,
     ) -> tuple[Weights, float, float]:
         import torch
 
         self._adapter.from_canonical(self._net, weights)
+        # FedProx anchor: the round's global model, snapshotted before any
+        # step. The proximal gradient mu*(w - anchor) vanishes here, so the
+        # first local step matches plain FedAvg's exactly (asserted in tests).
+        anchors = (
+            [p.detach().clone() for p in self._net.parameters()] if proximal_mu > 0.0 else None
+        )
         if self._x_nchw is None:
             self._x_nchw = np.ascontiguousarray(x.transpose(0, 3, 1, 2))
         xs = torch.from_numpy(self._x_nchw)
@@ -108,6 +141,12 @@ class _TorchTrainer:
                 idx = perm[start : start + batch_size]
                 logits = self._net(xs[idx])
                 loss = self._loss_fn(logits, ys[idx])
+                if anchors is not None:
+                    proximal = sum(
+                        torch.sum(torch.square(p - a))
+                        for p, a in zip(self._net.parameters(), anchors, strict=True)
+                    )
+                    loss = loss + 0.5 * proximal_mu * proximal
                 self._opt.zero_grad()
                 loss.backward()
                 self._opt.step()
@@ -232,6 +271,7 @@ class FederatedClient:
             self.y,
             epochs=max(1, response.local_epochs),
             batch_size=max(1, response.batch_size),
+            proximal_mu=max(0.0, response.proximal_mu),
         )
         return weights, int(len(self.y)), loss, accuracy
 
