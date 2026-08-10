@@ -614,6 +614,7 @@ def aggregator_from_config(config: object, clients_per_round: int) -> object:
     config import.
     """
     privacy = config.privacy
+    server_opt = config.server_optimizer
     return make_aggregator(
         dp_enabled=privacy.enabled,
         noise_multiplier=privacy.noise_multiplier,
@@ -623,6 +624,12 @@ def aggregator_from_config(config: object, clients_per_round: int) -> object:
         adaptive_target_quantile=privacy.adaptive_target_quantile,
         adaptive_learning_rate=privacy.adaptive_learning_rate,
         adaptive_clipped_count_stddev=privacy.adaptive_clipped_count_stddev,
+        server_optimizer=server_opt.name,
+        server_learning_rate=server_opt.learning_rate,
+        server_momentum=server_opt.momentum,
+        server_beta1=server_opt.beta1,
+        server_beta2=server_opt.beta2,
+        server_tau=server_opt.tau,
     )
 
 

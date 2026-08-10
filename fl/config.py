@@ -180,6 +180,63 @@ class ServerConfig:
 
 
 @dataclass(frozen=True)
+class ServerOptimizerConfig:
+    """The FedOpt server optimizer (Reddi et al., ICLR 2021) applied each round.
+
+    FedAvg adds the aggregated client delta to the global model directly; the
+    FedOpt family treats that delta as a pseudo-gradient and lets a stateful
+    server-side optimizer decide the step (:mod:`fl.server_optimizer`). The
+    default -- ``fedavg`` at learning rate 1.0 -- is the exact identity and
+    changes nothing about existing runs.
+
+    Each name reads only its own fields: ``momentum`` belongs to ``fedavgm``;
+    ``beta1``/``beta2``/``tau`` to ``fedadam`` and ``fedyogi``; ``fedavg``
+    reads the learning rate alone. Unread fields are ignored, not rejected,
+    so one config file can flip between optimizers by changing one line.
+
+    Not composable with differential privacy (cross-field check below): the
+    FedOpt path applies to the *weighted* mean, whose per-client sensitivity
+    is unbounded. Post-processing the noised uniform mean would be sound DP,
+    but this repo has not wired or measured that composition, and running an
+    unmeasured mechanism behind a config flag is how accounting fictions ship.
+    """
+
+    name: str = "fedavg"
+    learning_rate: float = 1.0
+    momentum: float = 0.9
+    beta1: float = 0.9
+    beta2: float = 0.99
+    tau: float = 1e-3
+
+    def validate(self) -> None:
+        # Lazy import: fl.server_optimizer pulls numpy, and this module stays
+        # importable without it until a config is actually constructed.
+        from .server_optimizer import VALID_SERVER_OPTIMIZERS
+
+        _require(
+            self.name in VALID_SERVER_OPTIMIZERS,
+            f"server_optimizer.name must be one of {VALID_SERVER_OPTIMIZERS}, got {self.name!r}",
+        )
+        _require(
+            self.learning_rate > 0.0,
+            f"server_optimizer.learning_rate must be > 0, got {self.learning_rate}",
+        )
+        _require(
+            0.0 <= self.momentum < 1.0,
+            f"server_optimizer.momentum must be in [0, 1), got {self.momentum}",
+        )
+        _require(
+            0.0 <= self.beta1 < 1.0,
+            f"server_optimizer.beta1 must be in [0, 1), got {self.beta1}",
+        )
+        _require(
+            0.0 <= self.beta2 < 1.0,
+            f"server_optimizer.beta2 must be in [0, 1), got {self.beta2}",
+        )
+        _require(self.tau > 0.0, f"server_optimizer.tau must be > 0, got {self.tau}")
+
+
+@dataclass(frozen=True)
 class PrivacyConfig:
     """Client-level differential privacy applied at the aggregation step.
 
@@ -262,6 +319,7 @@ class Config:
     training: TrainingConfig = field(default_factory=TrainingConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
     privacy: PrivacyConfig = field(default_factory=PrivacyConfig)
+    server_optimizer: ServerOptimizerConfig = field(default_factory=ServerOptimizerConfig)
 
     _SECTIONS = {
         "data": DataConfig,
@@ -269,6 +327,7 @@ class Config:
         "training": TrainingConfig,
         "server": ServerConfig,
         "privacy": PrivacyConfig,
+        "server_optimizer": ServerOptimizerConfig,
     }
 
     def __post_init__(self) -> None:
@@ -277,6 +336,7 @@ class Config:
         self.training.validate()
         self.server.validate()
         self.privacy.validate()
+        self.server_optimizer.validate()
         self._validate_cross_field()
 
     def _validate_cross_field(self) -> None:
@@ -298,6 +358,20 @@ class Config:
             f"{self.clients_per_round} of {self.data.num_clients} clients, which is below "
             f"server.min_clients_per_round ({self.server.min_clients_per_round}); "
             "every round would fail quorum",
+        )
+        _require(
+            not (
+                self.privacy.enabled
+                and (
+                    self.server_optimizer.name != "fedavg"
+                    or self.server_optimizer.learning_rate != 1.0
+                )
+            ),
+            f"server_optimizer {self.server_optimizer.name!r} "
+            f"(learning_rate={self.server_optimizer.learning_rate}) cannot be combined "
+            "with privacy.enabled: the FedOpt path applies to the weighted mean, whose "
+            "per-client sensitivity is unbounded, so the DP accounting would not hold. "
+            "Run FedOpt without DP, or DP with the default fedavg server step.",
         )
 
     @property
