@@ -35,10 +35,9 @@ exclude_lines = [
 [tool.ruff]
 line-length = 100
 target-version = "py310"
-# AUDIT.md quotes the pre-rewrite repository's code verbatim as evidence; the
-# formatter must not rewrite quoted evidence, so it is excluded from
-# repo-wide `ruff format` runs (CI lints fl/tests/scripts only).
-exclude = ["*_pb2.py", "*_pb2_grpc.py", "AUDIT.md"]
+# Generated protobuf stubs are excluded from repo-wide `ruff format` runs
+# (CI lints fl/tests/scripts only).
+exclude = ["*_pb2.py", "*_pb2_grpc.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "C4"]

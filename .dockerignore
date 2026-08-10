@@ -18,6 +18,3 @@ __pycache__/
 .ruff_cache/
 .coverage
 htmlcov/
-
-AUDIT.md
-GIT_SETUP.md
