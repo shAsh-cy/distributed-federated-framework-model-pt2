@@ -118,16 +118,24 @@ def simulate(
     batch_size: int = 32,
     local_epochs: int = 1,
     aggregator: object | None = None,
+    fedprox_mu: float = 0.0,
     label: str = "",
 ) -> dict:
     """One federated run over a pre-loaded population. Returns everything measured.
 
     ``aggregator`` overrides the default construction — used by
-    scripts/final_batch.py to inject an adaptive-clipping aggregator. Pass a
-    FRESH instance per run: DP aggregators carry cross-round state. When the
-    aggregator exposes ``current_clip`` (the adaptive one does), the per-round
-    clip is recorded as ``adapted_clip`` and the clipped fraction is measured
-    against it rather than against the static ``l2_clip_norm``.
+    scripts/final_batch.py to inject an adaptive-clipping aggregator and by
+    scripts/fedopt_batch.py for the FedOpt server optimizers. Pass a
+    FRESH instance per run: DP and FedOpt aggregators carry cross-round
+    state. When the aggregator exposes ``current_clip`` (the adaptive one
+    does), the per-round clip is recorded as ``adapted_clip`` and the clipped
+    fraction is measured against it rather than against the static
+    ``l2_clip_norm``.
+
+    ``fedprox_mu > 0`` swaps each client's plain Keras fit for the FedProx
+    proximal loop (fl/fedprox.py) over the same model and optimizer — the
+    trainer is built once and its traced step reused across all clients and
+    rounds, exactly as the production client does.
     """
     seed_everything(seed)
     started = time.monotonic()
@@ -136,6 +144,12 @@ def simulate(
     global_weights = build_model("femnist_cnn", seed=seed).get_weights()
     trainer = compile_for_training(build_model("femnist_cnn"), learning_rate, momentum)
     evaluator = compile_for_evaluation(build_model("femnist_cnn"))
+
+    prox = None
+    if fedprox_mu > 0.0:
+        from fl.fedprox import TFProximalTrainer
+
+        prox = TFProximalTrainer(trainer, fedprox_mu)
 
     if aggregator is None:
         aggregator = (
@@ -160,13 +174,21 @@ def simulate(
             idx = shards[int(cid)]
             trainer.set_weights(global_weights)
             _reset_optimizer(trainer)
-            trainer.fit(
-                train.x[idx],
-                train.y[idx],
-                epochs=local_epochs,
-                batch_size=batch_size,
-                verbose=0,
-            )
+            if prox is not None:
+                prox.fit(
+                    train.x[idx],
+                    train.y[idx],
+                    epochs=local_epochs,
+                    batch_size=batch_size,
+                )
+            else:
+                trainer.fit(
+                    train.x[idx],
+                    train.y[idx],
+                    epochs=local_epochs,
+                    batch_size=batch_size,
+                    verbose=0,
+                )
             w = trainer.get_weights()
             pre_clip_norms.append(l2_norm(subtract(w, global_weights)))
             updates.append(ClientUpdate(f"c{int(cid)}", w, int(idx.size)))
@@ -217,6 +239,7 @@ def simulate(
         "aggregator": getattr(aggregator, "name", "fedavg"),
         "noise_multiplier": noise_multiplier,
         "l2_clip_norm": l2_clip_norm,
+        "fedprox_mu": fedprox_mu,
         "seed": seed,
         "sampling_rate": clients_per_round / num_clients,
         "epsilon": compute_epsilon(noise_multiplier, clients_per_round / num_clients, rounds)
