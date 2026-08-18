@@ -208,8 +208,101 @@ from the defaults because it was measured and did not pay. That is the upgrade.
 
 ## Phase E — FedOpt under differential privacy
 
-*Running. This section is filled in from `docs/_fedopt_batch_e.json` when the
-batch lands.*
+**Both arms lose badly, and the reason is a coupling nobody had priced: the
+clipping norm and the server optimizer are not independent knobs.**
+
+FEMNIST, 1,000 writers, m = 200, E = 10, R = 20, seeds 42/43/44, matched to the
+recorded fixed-clip DP arm on everything except the server step — S = 2.0,
+target ε = 6.228 at δ = 1e-5, z = 1.1141230964660644.
+
+| Arm | Per-seed final | Mean | Range | vs DP arm | Residual DP cost |
+|---|---|---|---|---|---|
+| No-DP control | 0.7288, 0.7283, 0.7267 | **0.7279** | 0.21 pp | — | — |
+| Fixed-clip DP | 0.6841, 0.6769, 0.6835 | **0.6815** | 0.72 pp | — | 4.64 pp |
+| DP + FedAdam (slr 0.01) | 0.5636, 0.5527, 0.5268 | **0.5477** | 3.68 pp | **−13.38 pp** | **18.02 pp** |
+| DP + FedAvgM (slr 1.0, β 0.9) | 0.5335, 0.5280, 0.5337 | **0.5317** | 0.57 pp | **−14.98 pp** | **19.62 pp** |
+
+So the answer to the question the phase was built to ask — does adaptive server
+optimization recover part of the 4.64 pp DP cost? — is **no, emphatically**. It
+roughly quadruples it. Both arms land near 0.53–0.55 where the plain DP arm
+reaches 0.68.
+
+**ε is 6.228256677985603 on all six runs, identical to the fixed-clip arm's, to
+every recorded digit.** That is the post-processing claim holding on the real
+operating point rather than in a unit test: the server optimizer changed the
+model by 15 accuracy points and moved the privacy accounting by nothing.
+
+### The mechanism: a server optimizer invalidates the clip bracket
+
+The update norms say what happened, and they were recorded per run:
+
+| Arm | Median ‖Δw‖ over all rounds | vs baseline | Clipped fraction (S = 2.0) |
+|---|---|---|---|
+| Fixed-clip DP | 2.174 | — | 0.569 |
+| DP + FedAdam | 2.546 | +17 % | 0.628 |
+| DP + FedAvgM | 3.062 | **+41 %** | **0.818** |
+
+S = 2.0 was not arbitrary — it is the begins-to-bind knee, re-bracketed against
+the *FedAvg* trajectory's measured update norms at this exact budget
+([docs/adaptive_clipping.md](adaptive_clipping.md) §phase A), where it clips
+57 % of updates. A server optimizer moves the global model further per round,
+clients then train from a model further from where they started, their deltas
+grow, and a larger share of each delta is thrown away by a clip chosen for a
+gentler trajectory. FedAvgM inflates the median norm by 41 % and ends up
+discarding the tails of **82 %** of all updates.
+
+Two existing results in this repo predicted this and nobody connected them to
+FedOpt. [docs/dp_diagnosis.md](dp_diagnosis.md) §9 asks "is the clipping norm
+acting as a server step size?" and finds that at these budgets it partly is —
+so changing the server step and changing the clip are not independent
+interventions. And [docs/femnist_budget.md](femnist_budget.md) §5 states flatly
+that when the budget moved to E = 10, "the clip must be re-bracketed from
+scratch". Phase E is the same lesson with the *server optimizer* as the thing
+that moved: **under DP, the clip bracket does not transfer across server
+optimizers**, and both arms here ran with a clip bracketed for neither.
+
+**The two arms fail differently, which is only visible because both were run.**
+FedAvgM is *consistently* bad — 0.57 pp across seeds, tighter than the fixed
+arm's own 0.72 pp — the signature of a systematic overshoot that happens the
+same way every time. FedAdam's norm inflation is milder (+17 %) but its seed
+range blows out to **3.68 pp, five times the fixed arm's**, which is the
+signature of erratic step scaling rather than uniform overshoot: its second
+moment estimates E[Δ²] = E[Δ]² + σ², so the injected noise variance inflates *v*
+and `1/(√v + τ)` becomes a nonlinear function of a noisy quantity. Had only
+FedAdam been run — the arm the question was originally posed about — the result
+would have been a bare number with an unattributable cause, and the
+second-moment story would have looked like the whole explanation rather than
+half of one.
+
+### What this does and does not license
+
+**It licenses:** at this operating point, with server learning rates
+transferred from a noiseless Fashion sweep and a clip bracketed for FedAvg,
+server-side adaptivity does not recover DP cost — it multiplies it.
+
+**It does not license "FedOpt does not work under DP."** The confound is
+identified and measured, not hypothesised: the clip is wrong for these
+trajectories. The hyperparameters here are borrowed *twice over* — tuned on
+Fashion without noise, then applied to FEMNIST under noise that changes the loss
+surface the server step sees. Nobody has run the obvious follow-ups, and this
+document does not predict their outcome:
+
+- re-bracket S against the FedOpt trajectory's measured norms (the norms are
+  recorded above, so the bracket is a cheap calculation, not a sweep);
+- or lower the server learning rate under DP so the trajectory stops outrunning
+  the clip — FedAvgM's steady-state effective step at β = 0.9 is ~1/(1−β) = 10×;
+- either way, re-tune under noise rather than transfer.
+
+Until one of those runs, the honest claim is the narrow one: **no benefit at
+this operating point, with a measured reason to think the operating point rather
+than the method is what failed.**
+
+Finally, DP noise is drawn unseedably by TFF, so unlike phases A–D these six runs
+reproduce in distribution rather than bit-for-bit. The separations here are 13–15
+pp against seed ranges of 0.6–3.7 pp, so they survive that comfortably; do not
+read the individual figures to three significant digits.
+
+### The composition, and why the refusal is gone
 
 The composition is sound and this is the part worth stating carefully. When
 `privacy.enabled`, the server optimizer does not replace the DP aggregator — it
@@ -231,29 +324,17 @@ supplies a DP inner aggregator, so `weighted_average` is never called.
 `tests/test_server_optimizer.py::TestDpPostProcessing` asserts that too, by
 making `weighted_average` raise and running a DP round through FedAdam.
 
-The mechanism the phase tests: DP noise is zero-mean, and server momentum
-averages across rounds, which is exactly the setting where momentum should
-recover signal. The counter-consideration, and the reason FedAvgM is run
-alongside FedAdam rather than FedAdam alone: FedAdam's second moment estimates
-E[Δ²] = E[Δ]² + σ², so injected noise variance inflates *v* permanently, and
-the step `1/(√v + τ)` is a nonlinear map of a noisy input — a biased estimate of
-the noiseless Adam step. Momentum has no such term. Without both arms a null
-result could not distinguish "server adaptivity does not recover DP cost" from
-"the second moment is the part the noise breaks".
+The hypothesis the phase was built on was reasonable and turned out to be
+beside the point: DP noise is zero-mean, and server momentum averages across
+rounds, so momentum should recover signal from noise. It does — that is not
+where either arm lost. What neither arm survived was the clip, and no amount of
+noise-averaging helps when 82 % of every update is being discarded before the
+optimizer ever sees it.
 
-Arms, matched to the recorded fixed-clip DP arm on everything except the server
-step (S = 2.0, target ε = 6.228 at δ = 1e-5, z = 1.1141230964660644, m = 200,
-E = 10, R = 20, seeds 42/43/44):
-
-- **FedAdam** at server lr 0.01 — the arm the question was asked about.
-- **FedAvgM** at server lr 1.0, momentum 0.9 — the mechanism control.
-
-Against two recorded arms: the fixed-clip DP arm at **0.6815**
-(`docs/_final_batch_b.json`) and the no-DP control at **0.7279**
-(`docs/_femnist_budget_e.json`) — a DP cost of 4.64 pp.
-
-Two limitations that will apply to whatever the numbers say. The server learning
-rates are borrowed *twice over* — transferred from Fashion, then applied under
-noise that changes the loss surface the server step sees. And DP noise is drawn
-unseedably by TFF, so unlike phases A–D these runs reproduce in distribution
-rather than bit-for-bit.
+That is worth recording as a methodological lesson rather than only a result.
+The composition was checked for *privacy* correctness exhaustively — post-
+processing, structural unreachability, ε equality asserted three ways — and the
+thing that actually broke was a *utility* coupling between two hyperparameters
+that had each been tuned correctly in isolation. Privacy soundness and
+mechanism sanity are different audits, and passing the first buys nothing in the
+second.
