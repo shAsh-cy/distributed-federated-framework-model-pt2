@@ -60,6 +60,13 @@ seeds. Client drift on non-IID shards would show the opposite ordering. At
 this scale the evidence points at insufficient budget, now partially paid,
 not at FedProx.
 
+> **Since measured, and the inference held.** FedProx was subsequently run at
+> this exact budget (µ ∈ {0.001, 0.01, 0.1}, one seed per µ): the two smaller
+> µ land inside the control's own three-seed range and µ = 0.1 costs 1.9 pp.
+> No benefit at the tested budgets on our splits — which is what the absent
+> drift signature predicted, now measured rather than inferred.
+> [docs/server_optimizers.md](server_optimizers.md).
+
 ## 3. Rounds at E = 10: the curve, not the endpoint
 
 Three seeds (42/43/44) run to 100 rounds each at E = 10, m = 200, no DP;
