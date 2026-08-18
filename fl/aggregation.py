@@ -202,6 +202,96 @@ class FedAvgAggregator:
         return weighted_average(updates)
 
 
+class FedOptAggregator:
+    """FedOpt (Reddi et al. 2021): an aggregated delta + a server optimizer.
+
+    The round's aggregate is computed by ``inner`` -- by default the same
+    sample-count-weighted mean :class:`FedAvgAggregator` computes. The
+    difference is what happens next. Instead of *becoming* the global model,
+    the aggregate is read as a pseudo-gradient ``delta = agg - w_global`` and
+    handed to a server optimizer (:mod:`fl.server_optimizer`) whose
+    per-parameter state -- momentum for FedAvgM, first and second moments for
+    FedAdam/FedYogi -- persists across rounds. That state is why the optimizer
+    is owned here, by the object that lives for the whole run, and not rebuilt
+    per round.
+
+    Arithmetic is float64 from the aggregate onward (delta -> step -> apply),
+    cast to float32 only at the model boundary. With the identity optimizer
+    (SGD, lr=1.0, no momentum) the result is bit-for-bit
+    :class:`FedAvgAggregator`'s output -- asserted in the tests, which is
+    what makes this a strict generalisation rather than a parallel path.
+
+    **DP composition.** ``inner`` may be a DP aggregator, in which case the
+    pseudo-gradient this optimizer consumes is the *privatized* mean delta:
+    clipped per client, noised, and averaged UNIFORMLY by TFF's
+    ``DifferentiallyPrivateFactory``. Applying an optimizer to it is
+    post-processing -- the optimizer's moments at round ``t`` are functions of
+    privatized outputs from rounds ``1..t-1`` alone, so no additional budget
+    is consumed and epsilon is unchanged at fixed ``z``
+    (:func:`compute_epsilon` is a function of ``z``, ``q`` and ``R`` only;
+    ``tests/test_server_optimizer.py`` asserts the equality directly). This is
+    how DP-FTRL and production DP-FL compose server-side adaptivity with DP.
+
+    What would NOT be sound is running the *default* inner under DP: the
+    sample-count-weighted mean has per-client influence ``n_k / sum(n)``, which
+    depends on private data, so no constant sensitivity bound exists for it.
+    That is the real constraint, and it is structural rather than checked --
+    :func:`make_aggregator` is the only constructor the three execution paths
+    use, and under DP it always supplies a DP ``inner``. Constructing this class
+    directly with no ``inner`` gives plain non-private FedOpt, which is correct;
+    there is no privacy claim for such an instance to violate.
+    """
+
+    def __init__(self, optimizer: object, inner: object | None = None) -> None:
+        self._optimizer = optimizer
+        self._inner = inner
+        self.name = (
+            str(optimizer.name)
+            if inner is None
+            else f"{optimizer.name}+{getattr(inner, 'name', '?')}"
+        )
+
+    def aggregate(self, updates: list[ClientUpdate], global_weights: Weights) -> Weights:
+        if self._inner is None:
+            averaged = weighted_average(updates)
+        else:
+            averaged = self._inner.aggregate(updates, global_weights)
+        anchors = [np.asarray(g, dtype=np.float64) for g in global_weights]
+        delta = [
+            np.asarray(a, dtype=np.float64) - g for a, g in zip(averaged, anchors, strict=True)
+        ]
+        step = self._optimizer.step(delta)
+        return [
+            (g + np.asarray(s, dtype=np.float64)).astype(np.float32)
+            for g, s in zip(anchors, step, strict=True)
+        ]
+
+    @property
+    def current_clip(self) -> float | None:
+        """Forward the inner aggregator's adapted clip, if it has one.
+
+        ``scripts/femnist_experiments.py`` reads ``current_clip`` off the
+        aggregator each round to record the adaptive-clipping trajectory.
+        Wrapping an adaptive DP aggregator must not hide it.
+        """
+        return getattr(self._inner, "current_clip", None)
+
+    def reset(self) -> None:
+        """Drop the optimizer's cross-round state (a new run's clean slate),
+        and forward to the inner aggregator if it has a reset of its own.
+
+        The DP aggregators deliberately do not define one: TFF's
+        ``AggregationProcess`` state is bound to a value type fixed at first
+        use, so a clean slate there means a fresh instance, which is what every
+        caller constructs per run. This forwards rather than assumes, so an
+        inner aggregator that grows a ``reset`` is not silently skipped.
+        """
+        self._optimizer.reset()
+        inner_reset = getattr(self._inner, "reset", None)
+        if callable(inner_reset):
+            inner_reset()
+
+
 def _ensure_tff_context() -> None:
     """Install a TFF execution context for the CURRENT thread if it has none.
 
@@ -570,6 +660,7 @@ def aggregator_from_config(config: object, clients_per_round: int) -> object:
     config import.
     """
     privacy = config.privacy
+    server_opt = config.server_optimizer
     return make_aggregator(
         dp_enabled=privacy.enabled,
         noise_multiplier=privacy.noise_multiplier,
@@ -579,6 +670,12 @@ def aggregator_from_config(config: object, clients_per_round: int) -> object:
         adaptive_target_quantile=privacy.adaptive_target_quantile,
         adaptive_learning_rate=privacy.adaptive_learning_rate,
         adaptive_clipped_count_stddev=privacy.adaptive_clipped_count_stddev,
+        server_optimizer=server_opt.name,
+        server_learning_rate=server_opt.learning_rate,
+        server_momentum=server_opt.momentum,
+        server_beta1=server_opt.beta1,
+        server_beta2=server_opt.beta2,
+        server_tau=server_opt.tau,
     )
 
 
@@ -592,13 +689,53 @@ def make_aggregator(
     adaptive_target_quantile: float = 0.5,
     adaptive_learning_rate: float = 0.2,
     adaptive_clipped_count_stddev: float | None = None,
+    server_optimizer: str = "fedavg",
+    server_learning_rate: float = 1.0,
+    server_momentum: float = 0.9,
+    server_beta1: float = 0.9,
+    server_beta2: float = 0.99,
+    server_tau: float = 1e-3,
 ) -> Aggregator:
     """Build the aggregator a config asks for. Fixed clipping is the default;
-    the adaptive path is opt-in and l2_clip_norm becomes its initial estimate."""
+    the adaptive path is opt-in and l2_clip_norm becomes its initial estimate.
+
+    ``server_optimizer`` selects the FedOpt family member applied to the
+    aggregated delta (fl/server_optimizer.py); plain ``fedavg`` at server
+    learning rate 1.0 -- the identity -- short-circuits to the bare
+    aggregator, so both default paths are byte-identical to what they
+    always were.
+
+    Under DP the server optimizer WRAPS the DP aggregator rather than
+    replacing it: the DP aggregator clips per client, noises and averages
+    uniformly, and the optimizer consumes that privatized delta. That is
+    post-processing, so epsilon at fixed ``z`` is unchanged -- see
+    :class:`FedOptAggregator` for the argument and the test that checks it.
+    The combination this function will not build is a server optimizer over
+    the *sample-count-weighted* mean under DP, whose per-client sensitivity is
+    unbounded; the wrap makes that unreachable by construction.
+    """
+    identity_server_step = server_optimizer == "fedavg" and server_learning_rate == 1.0
+
     if not dp_enabled:
-        return FedAvgAggregator()
+        if identity_server_step:
+            return FedAvgAggregator()
+        return FedOptAggregator(
+            _server_optimizer(
+                server_optimizer,
+                server_learning_rate,
+                server_momentum,
+                server_beta1,
+                server_beta2,
+                server_tau,
+            )
+        )
+
+    # DP path. The aggregator built here is what bounds sensitivity and draws
+    # the noise; a server optimizer, if asked for, WRAPS it rather than
+    # replacing it, so the optimizer only ever sees a privatized delta.
+    inner: Aggregator
     if adaptive_clipping:
-        return AdaptiveDPFedAvgAggregator(
+        inner = AdaptiveDPFedAvgAggregator(
             noise_multiplier=noise_multiplier,
             initial_l2_clip_norm=l2_clip_norm,
             clients_per_round=clients_per_round,
@@ -606,8 +743,43 @@ def make_aggregator(
             learning_rate=adaptive_learning_rate,
             clipped_count_stddev=adaptive_clipped_count_stddev,
         )
-    return DPFedAvgAggregator(
-        noise_multiplier=noise_multiplier,
-        l2_clip_norm=l2_clip_norm,
-        clients_per_round=clients_per_round,
+    else:
+        inner = DPFedAvgAggregator(
+            noise_multiplier=noise_multiplier,
+            l2_clip_norm=l2_clip_norm,
+            clients_per_round=clients_per_round,
+        )
+    if identity_server_step:
+        return inner
+    return FedOptAggregator(
+        _server_optimizer(
+            server_optimizer,
+            server_learning_rate,
+            server_momentum,
+            server_beta1,
+            server_beta2,
+            server_tau,
+        ),
+        inner=inner,
+    )
+
+
+def _server_optimizer(
+    name: str,
+    learning_rate: float,
+    momentum: float,
+    beta1: float,
+    beta2: float,
+    tau: float,
+) -> object:
+    """Build a server optimizer. Imported lazily to keep this module light."""
+    from .server_optimizer import make_server_optimizer
+
+    return make_server_optimizer(
+        name,
+        learning_rate=learning_rate,
+        momentum=momentum,
+        beta1=beta1,
+        beta2=beta2,
+        tau=tau,
     )

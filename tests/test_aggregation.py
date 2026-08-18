@@ -437,3 +437,53 @@ class TestAggregatorFromConfig:
         assert isinstance(fixed, DPFedAvgAggregator)
         plain = aggregator_from_config(Config.from_dict({}), clients_per_round=5)
         assert isinstance(plain, FedAvgAggregator)
+
+    def test_server_optimizer_section_is_honoured(self):
+        """Same lesson as M3, applied to the new section: the config that asks
+        for FedYogi must get FedYogi with ITS hyperparameters, on every path
+        that builds through this constructor."""
+        from fl.aggregation import FedOptAggregator, aggregator_from_config
+        from fl.config import Config
+
+        cfg = Config.from_dict(
+            {
+                "server_optimizer": {
+                    "name": "fedyogi",
+                    "learning_rate": 0.1,
+                    "beta1": 0.8,
+                    "beta2": 0.95,
+                    "tau": 0.01,
+                }
+            }
+        )
+        agg = aggregator_from_config(cfg, clients_per_round=5)
+        assert isinstance(agg, FedOptAggregator)
+        assert agg.name == "fedyogi"
+        opt = agg._optimizer
+        assert (opt.learning_rate, opt.beta1, opt.beta2, opt.tau, opt.yogi) == (
+            0.1,
+            0.8,
+            0.95,
+            0.01,
+            True,
+        )
+
+    def test_each_run_gets_a_fresh_server_optimizer(self):
+        """State resets between runs: every aggregator_from_config call owns
+        its own optimizer, so one run's momentum cannot bleed into the next."""
+        from fl.aggregation import aggregator_from_config
+        from fl.config import Config
+
+        cfg = Config.from_dict(
+            {"server_optimizer": {"name": "fedavgm", "learning_rate": 1.0, "momentum": 0.9}}
+        )
+        updates = [ClientUpdate("a", [np.array([1.0], np.float32)], num_examples=5)]
+        zeros = [np.zeros((1,), np.float32)]
+
+        first_run = aggregator_from_config(cfg, clients_per_round=5)
+        first_round = float(first_run.aggregate(updates, zeros)[0][0])
+        warmed = float(first_run.aggregate(updates, zeros)[0][0])
+
+        second_run = aggregator_from_config(cfg, clients_per_round=5)
+        assert float(second_run.aggregate(updates, zeros)[0][0]) == first_round
+        assert warmed != first_round

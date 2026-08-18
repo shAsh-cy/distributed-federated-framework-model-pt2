@@ -154,6 +154,13 @@ message GetGlobalModelResponse {
   int32 batch_size = 7;
   double learning_rate = 8;
   double momentum = 9;
+  // FedProx proximal coefficient (Li et al., MLSys 2020): each client adds
+  // (mu/2) * ||w - w_global||^2 to its local objective, pulling local training
+  // back toward the model it started from. 0 disables the term, making the
+  // local objective exactly FedAvg's. Travels here rather than in client
+  // config for the same reason the learning rate does: one misconfigured
+  // participant must not quietly optimise a different objective all run.
+  double proximal_mu = 10;
 }
 
 // ---------------------------------------------------------------------------

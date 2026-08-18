@@ -431,6 +431,7 @@ def test_local_hyperparameters_are_dictated_by_the_server():
             "batch_size": 16,
             "learning_rate": 0.05,
             "momentum": 0.5,
+            "fedprox_mu": 0.07,
         },
         server={"round_deadline_seconds": 5.0, "min_clients_per_round": 1},
     )
@@ -456,6 +457,7 @@ def test_local_hyperparameters_are_dictated_by_the_server():
         assert response.batch_size == 16
         assert response.learning_rate == pytest.approx(0.05)
         assert response.momentum == pytest.approx(0.5)
+        assert response.proximal_mu == pytest.approx(0.07)
         assert response.seconds_until_deadline > 0
 
         h._thread.join(timeout=30)

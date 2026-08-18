@@ -238,3 +238,97 @@ def test_femnist_yaml_config_loads():
     assert cfg.data.partition == "natural"
     assert cfg.model.name == "femnist_cnn"
     assert cfg.clients_per_round == 50
+
+
+# ---------------------------------------------------------------------------
+# The server_optimizer section (FedOpt)
+# ---------------------------------------------------------------------------
+
+
+def test_server_optimizer_defaults_to_the_fedavg_identity():
+    cfg = Config.from_dict({})
+    assert cfg.server_optimizer.name == "fedavg"
+    assert cfg.server_optimizer.learning_rate == 1.0
+
+
+def test_server_optimizer_section_parses_and_round_trips():
+    raw = {
+        "server_optimizer": {
+            "name": "fedyogi",
+            "learning_rate": 0.1,
+            "beta1": 0.9,
+            "beta2": 0.99,
+            "tau": 0.001,
+        }
+    }
+    cfg = Config.from_dict(raw)
+    assert cfg.server_optimizer.name == "fedyogi"
+    assert cfg.server_optimizer.learning_rate == 0.1
+    assert Config.from_dict(cfg.to_dict()).server_optimizer == cfg.server_optimizer
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        ({"name": "adam"}, "server_optimizer.name"),
+        ({"learning_rate": 0.0}, "server_optimizer.learning_rate"),
+        ({"learning_rate": -0.1}, "server_optimizer.learning_rate"),
+        ({"momentum": 1.0}, "server_optimizer.momentum"),
+        ({"beta1": 1.0}, "server_optimizer.beta1"),
+        ({"beta2": -0.5}, "server_optimizer.beta2"),
+        ({"tau": 0.0}, "server_optimizer.tau"),
+    ],
+)
+def test_server_optimizer_out_of_range_values_rejected(payload, message):
+    with pytest.raises(ConfigError, match=message.replace(".", r"\.")):
+        Config.from_dict({"server_optimizer": payload})
+
+
+def test_server_optimizer_with_dp_is_accepted():
+    """The former cross-field refusal is gone. Under DP the server optimizer
+    wraps the DP aggregator's privatized delta, which is post-processing: the
+    reported epsilon at a fixed noise multiplier is unchanged (asserted in
+    tests/test_server_optimizer.py::TestDpPostProcessing)."""
+    config = Config.from_dict(
+        {
+            "privacy": {"enabled": True, "noise_multiplier": 1.0},
+            "server_optimizer": {"name": "fedadam", "learning_rate": 0.1},
+        }
+    )
+    assert config.privacy.enabled
+    assert config.server_optimizer.name == "fedadam"
+    assert config.server_optimizer.learning_rate == 0.1
+
+
+def test_damped_fedavg_with_dp_is_accepted_too():
+    """fedavg at server lr != 1.0 is a server step like any other."""
+    config = Config.from_dict(
+        {
+            "privacy": {"enabled": True, "noise_multiplier": 1.0},
+            "server_optimizer": {"learning_rate": 0.5},
+        }
+    )
+    assert config.privacy.enabled
+    assert config.server_optimizer.name == "fedavg"
+    assert config.server_optimizer.learning_rate == 0.5
+
+
+def test_dp_with_default_server_optimizer_still_valid():
+    cfg = Config.from_dict({"privacy": {"enabled": True, "noise_multiplier": 1.0}})
+    assert cfg.privacy.enabled
+    assert cfg.server_optimizer.name == "fedavg"
+
+
+def test_replace_can_switch_server_optimizer():
+    cfg = Config.from_dict({})
+    swapped = cfg.replace(server_optimizer={"name": "fedavgm", "momentum": 0.99})
+    assert swapped.server_optimizer.name == "fedavgm"
+    assert swapped.server_optimizer.momentum == 0.99
+
+
+def test_fedprox_mu_defaults_to_zero_and_rejects_negative():
+    assert Config.from_dict({}).training.fedprox_mu == 0.0
+    cfg = Config.from_dict({"training": {"fedprox_mu": 0.01}})
+    assert cfg.training.fedprox_mu == 0.01
+    with pytest.raises(ConfigError, match=r"training\.fedprox_mu"):
+        Config.from_dict({"training": {"fedprox_mu": -0.1}})

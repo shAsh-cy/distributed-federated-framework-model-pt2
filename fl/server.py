@@ -290,6 +290,7 @@ class FederatedServer(fl_comm_pb2_grpc.FederatedLearningServicer):
                 batch_size=t.batch_size,
                 learning_rate=t.learning_rate,
                 momentum=t.momentum,
+                proximal_mu=t.fedprox_mu,
             )
 
     def SubmitUpdate(self, request, context):  # noqa: N802

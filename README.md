@@ -573,6 +573,76 @@ knowing the optimum binds, which relocates the tuning problem rather than
 removing it. Fixed clipping stays the default. Full write-up:
 **[docs/adaptive_clipping.md](docs/adaptive_clipping.md)**.
 
+**Server optimizers and FedProx — two a-priori omissions, now measured
+decisions.** FedOpt (Reddi et al. 2021) and FedProx were previously absent
+because they had been argued away rather than run; both have now been measured
+at the same budgets as everything above. Only three-seed arms appear here — the
+single-seed server-learning-rate grid that located the operating points is a
+tuning map, not a result, and is reported as one in the write-up.
+
+On Fashion-MNIST (N = 100, m = 50, R = 20, 3 seeds, no DP) all three server
+optimizers beat FedAvg:
+
+| Arm | Mean final | Range | vs FedAvg |
+|---|---|---|---|
+| FedAvg | 0.7686 | 2.4 pp | — |
+| **FedAvgM** (slr 1.0, β 0.9) | **0.8119** | 1.6 pp | **+4.33 pp** |
+| FedYogi (slr 0.1) | 0.8060 | 2.9 pp | +3.74 pp |
+| FedAdam (slr 0.01) | 0.7856 | 0.9 pp | +1.70 pp |
+
+**The result does not transfer to FEMNIST at borrowed hyperparameters**, and
+that qualifier is the finding, not a hedge — the server learning rates were
+carried over from the Fashion sweep and never re-tuned, so these numbers
+measure transfer and **may understate the methods**. At the working budget
+(1,000 writers, m = 200, E = 10, R = 20, 3 seeds) against the 0.7279 control:
+FedYogi 0.7336 (+0.57 pp) and FedAvgM 0.7205 (−0.74 pp) are both inside the
+seed bands and so indistinguishable from it, while **FedAdam falls to 0.6675
+(−6.04 pp)** — a real degradation, 28× the control's range. What travelled from
+Fashion was the failure, not the gain.
+
+**FedProx: no benefit at the tested budgets on our splits.** FEMNIST, one seed
+per µ against the three-seed control (range 0.21 pp): µ = 0.001 → 0.7287
+(+0.08 pp) and µ = 0.01 → 0.7264 (−0.15 pp) both land inside the control's own
+seed band; µ = 0.1 → 0.7086 (−1.93 pp) is a measurable cost. This is a scoped
+null, not "FedProx doesn't help" — one dataset, one budget, one seed per cell,
+and E = 10 may simply not be where a drift-correction term earns its keep
+(consistent with [docs/femnist_budget.md](docs/femnist_budget.md) finding no
+drift signature across the E grid). What changed is that the omission is now a
+measurement rather than an assumption.
+
+**Under DP, both server optimizers lose badly — and the reason is a coupling,
+not the optimizer.** The server optimizer **wraps** the DP aggregator rather
+than replacing it, consuming the already-privatized delta; that is
+post-processing, so ε is unchanged at a fixed noise multiplier — **6.228256677985603
+on all six runs, identical to the fixed-clip arm's to every recorded digit**,
+asserted in `tests/test_server_optimizer.py` rather than argued. At the recorded
+DP operating point (S = 2.0, ε = 6.228, m = 200, E = 10, R = 20, 3 seeds):
+
+| Arm | Mean final | Range | vs DP arm | Residual DP cost |
+|---|---|---|---|---|
+| No-DP control | 0.7279 | 0.21 pp | — | — |
+| Fixed-clip DP | 0.6815 | 0.72 pp | — | 4.64 pp |
+| DP + FedAdam | **0.5477** | 3.68 pp | −13.38 pp | **18.02 pp** |
+| DP + FedAvgM | **0.5317** | 0.57 pp | −14.98 pp | **19.62 pp** |
+
+So adaptive server optimization does not recover part of the 4.64 pp DP cost; it
+roughly quadruples it. **The measured cause is that a server optimizer
+invalidates the clipping bracket.** S = 2.0 was bracketed against the FedAvg
+trajectory, where it clips 57 % of updates; a server optimizer moves the global
+model further per round, so client deltas grow — median ‖Δw‖ rises from 2.174 to
+2.546 (FedAdam, +17 %) and 3.062 (FedAvgM, +41 %) — and the clipped fraction
+reaches **82 %** for FedAvgM. Most of each update is discarded before the
+optimizer sees it. The two arms also fail differently: FedAvgM consistently
+(0.57 pp across seeds, systematic overshoot), FedAdam erratically (3.68 pp, five
+times the fixed arm's — its second moment absorbing the noise variance).
+
+That licenses "no benefit **at this operating point**", not "FedOpt does not work
+under DP": the server learning rates were borrowed twice over (Fashion, then
+under noise) and the clip was bracketed for neither. Re-bracketing S against the
+recorded norms above is a cheap calculation nobody has run. Full write-up,
+including why this grid cannot adjudicate Reddi et al.'s tuning claim:
+**[docs/server_optimizers.md](docs/server_optimizers.md)**.
+
 ---
 
 ## Quickstart

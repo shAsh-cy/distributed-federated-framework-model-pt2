@@ -120,9 +120,20 @@ class TrainingConfig:
     #: (fl/checkpoint.py). None disables the write on the gRPC and one-shot
     #: experiment paths; the coordinator always checkpoints per run id.
     checkpoint_path: str | None = None
+    #: FedProx proximal coefficient mu (Li et al., MLSys 2020). When > 0 every
+    #: client adds (mu/2)*||w - w_global||^2 to its local objective, which
+    #: bounds how far local training can drift from the round's starting
+    #: model. 0 disables the term: the local objective is exactly FedAvg's.
+    #: Server-dictated per round (GetGlobalModelResponse.proximal_mu), like
+    #: the other local hyperparameters.
+    fedprox_mu: float = 0.0
 
     def validate(self) -> None:
         _require(self.rounds >= 1, f"training.rounds must be >= 1, got {self.rounds}")
+        _require(
+            self.fedprox_mu >= 0.0,
+            f"training.fedprox_mu must be >= 0, got {self.fedprox_mu}",
+        )
         _require(
             self.checkpoint_path is None or str(self.checkpoint_path).strip() != "",
             "training.checkpoint_path must be a non-empty path or omitted",
@@ -177,6 +188,66 @@ class ServerConfig:
             self.max_message_mb >= 1,
             f"server.max_message_mb must be >= 1, got {self.max_message_mb}",
         )
+
+
+@dataclass(frozen=True)
+class ServerOptimizerConfig:
+    """The FedOpt server optimizer (Reddi et al., ICLR 2021) applied each round.
+
+    FedAvg adds the aggregated client delta to the global model directly; the
+    FedOpt family treats that delta as a pseudo-gradient and lets a stateful
+    server-side optimizer decide the step (:mod:`fl.server_optimizer`). The
+    default -- ``fedavg`` at learning rate 1.0 -- is the exact identity and
+    changes nothing about existing runs.
+
+    Each name reads only its own fields: ``momentum`` belongs to ``fedavgm``;
+    ``beta1``/``beta2``/``tau`` to ``fedadam`` and ``fedyogi``; ``fedavg``
+    reads the learning rate alone. Unread fields are ignored, not rejected,
+    so one config file can flip between optimizers by changing one line.
+
+    Composable with differential privacy. Under ``privacy.enabled`` the server
+    optimizer is applied to the DP aggregator's *privatized* delta -- clipped
+    per client, noised, uniformly averaged -- which is post-processing, so the
+    reported epsilon at a fixed noise multiplier is unchanged. What is not
+    sound, and is unreachable by construction, is an optimizer over the
+    sample-count-weighted mean under DP: that mean's per-client influence
+    ``n_k / sum(n)`` depends on private data, so no constant sensitivity bound
+    exists for it. See :class:`fl.aggregation.FedOptAggregator`.
+    """
+
+    name: str = "fedavg"
+    learning_rate: float = 1.0
+    momentum: float = 0.9
+    beta1: float = 0.9
+    beta2: float = 0.99
+    tau: float = 1e-3
+
+    def validate(self) -> None:
+        # Lazy import: fl.server_optimizer pulls numpy, and this module stays
+        # importable without it until a config is actually constructed.
+        from .server_optimizer import VALID_SERVER_OPTIMIZERS
+
+        _require(
+            self.name in VALID_SERVER_OPTIMIZERS,
+            f"server_optimizer.name must be one of {VALID_SERVER_OPTIMIZERS}, got {self.name!r}",
+        )
+        _require(
+            self.learning_rate > 0.0,
+            f"server_optimizer.learning_rate must be > 0, got {self.learning_rate}",
+        )
+        _require(
+            0.0 <= self.momentum < 1.0,
+            f"server_optimizer.momentum must be in [0, 1), got {self.momentum}",
+        )
+        _require(
+            0.0 <= self.beta1 < 1.0,
+            f"server_optimizer.beta1 must be in [0, 1), got {self.beta1}",
+        )
+        _require(
+            0.0 <= self.beta2 < 1.0,
+            f"server_optimizer.beta2 must be in [0, 1), got {self.beta2}",
+        )
+        _require(self.tau > 0.0, f"server_optimizer.tau must be > 0, got {self.tau}")
 
 
 @dataclass(frozen=True)
@@ -262,6 +333,7 @@ class Config:
     training: TrainingConfig = field(default_factory=TrainingConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
     privacy: PrivacyConfig = field(default_factory=PrivacyConfig)
+    server_optimizer: ServerOptimizerConfig = field(default_factory=ServerOptimizerConfig)
 
     _SECTIONS = {
         "data": DataConfig,
@@ -269,6 +341,7 @@ class Config:
         "training": TrainingConfig,
         "server": ServerConfig,
         "privacy": PrivacyConfig,
+        "server_optimizer": ServerOptimizerConfig,
     }
 
     def __post_init__(self) -> None:
@@ -277,6 +350,7 @@ class Config:
         self.training.validate()
         self.server.validate()
         self.privacy.validate()
+        self.server_optimizer.validate()
         self._validate_cross_field()
 
     def _validate_cross_field(self) -> None:
@@ -299,6 +373,13 @@ class Config:
             f"server.min_clients_per_round ({self.server.min_clients_per_round}); "
             "every round would fail quorum",
         )
+        # No cross-field check between privacy.enabled and server_optimizer.
+        # Under DP the server optimizer wraps the DP aggregator's privatized
+        # output (fl/aggregation.py, make_aggregator), which is post-processing:
+        # epsilon at fixed noise_multiplier is unchanged, and the accounting
+        # inputs (z, q, R) never see the optimizer. The combination that would
+        # break accounting -- an optimizer over the sample-count-weighted mean
+        # under DP -- is unreachable by construction, not by validation.
 
     @property
     def clients_per_round(self) -> int:
