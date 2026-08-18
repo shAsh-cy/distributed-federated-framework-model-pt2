@@ -20,10 +20,25 @@
                                 same recorded control. The repo previously
                                 omitted FedProx a priori; this measures it.
 
+  E  docs/_fedopt_batch_e.json  FedOpt over the PRIVATIZED delta at the
+                                recorded DP operating point (S=2.0, target
+                                epsilon 6.228, E=10, m=200, R=20), 3 seeds
+                                per arm, against two recorded arms: the
+                                fixed-clip DP arm (docs/_final_batch_b.json,
+                                0.6815) and the no-DP control (0.7279). Asks
+                                whether server adaptivity recovers part of
+                                the 4.6 pp DP cost. FedAdam is the arm the
+                                question was asked about; FedAvgM isolates
+                                the mechanism, since DP noise is zero-mean
+                                and momentum averages it across rounds while
+                                FedAdam's second moment absorbs it.
+
 A phase whose JSON already exists is skipped, so a crashed or interrupted
-batch resumes by re-running the script. No DP anywhere in this batch: every
-run is deterministic in configuration and seed up to floating-point
-summation order.
+batch resumes by re-running the script. Phases A-D are deterministic in
+configuration and seed up to floating-point summation order -- no DP. Phase E
+IS a DP phase: TFF draws the noise unseedably, so its runs reproduce in
+distribution rather than bit-for-bit, and it checkpoints each completed run to
+_fedopt_batch_e_partial.json so an interruption resumes mid-arm.
 
 Run detached (do not pipe stdout into a command that waits for EOF):
 
@@ -59,6 +74,27 @@ FEMNIST_WRITERS = 1000
 FEMNIST_M = 200
 FEMNIST_LOCAL_EPOCHS = 10
 FEDPROX_MUS = (0.001, 0.01, 0.1)
+
+#: Phase E: the DP arms. Configuration is copied EXACTLY from the recorded
+#: fixed-clip DP arm (docs/_final_batch_b.json) so the comparison is matched
+#: on everything except the server step -- same clip, same target epsilon,
+#: same budget, same seeds. Server learning rates come from the Fashion sweep
+#: (phase A), inheriting phase C's transfer limitation.
+DP_CLIP = 2.0
+DP_TARGET_EPSILON = 6.228
+DP_DELTA = 1e-5
+#: FedAdam first: it is the arm the question was asked about. FedAvgM second:
+#: it isolates the MECHANISM. DP noise is zero-mean and server momentum
+#: averages it across rounds, whereas FedAdam's second moment estimates
+#: E[d^2] = E[d]^2 + sigma^2, so injected variance inflates v permanently and
+#: 1/(sqrt(v)+tau) makes the step a biased estimate of the noiseless one. If
+#: FedAdam alone were run, a null result could not distinguish "server
+#: adaptivity does not recover DP cost" from "the second moment is the part
+#: noise breaks".
+DP_ARMS = (
+    {"name": "fedadam", "server_lr": 0.01},
+    {"name": "fedavgm", "server_lr": 1.0, "momentum": 0.9},
+)
 #: A grid cell within this of its family's best counts as "near-best" --
 #: the fraction of near-best cells is the tuning-ease measure the JSON
 #: records (a family where most of the grid works is easy to tune; a
@@ -380,6 +416,181 @@ def phase_d(population: tuple) -> dict:
     }
 
 
+def _recorded_dp_arm() -> dict | None:
+    """The matched fixed-clip DP arm: phase B of the final batch."""
+    path = DOCS / "_final_batch_b.json"
+    if not path.exists():
+        LOGGER.warning("no recorded DP arm at %s; comparison omitted", path)
+        return None
+    data = json.loads(path.read_text(encoding="utf-8"))
+    s = data["summary"]
+    return {
+        "source": path.name,
+        "l2_clip_norm": data["l2_clip_norm"],
+        "target_epsilon": data["target_epsilon"],
+        "calibrated_z": data["calibrated_z"],
+        "achieved_epsilon": data["achieved_epsilon"],
+        "mean_final": s["mean_final"],
+        "range_final": s["range_final"],
+        "final_per_seed": s["final_per_seed"],
+    }
+
+
+def _dp_fedopt_aggregator(arm: dict, z: float) -> object:
+    """The composed aggregator: a server optimizer OVER the DP aggregator.
+
+    ``make_aggregator`` builds the DP aggregator and hands it to
+    :class:`FedOptAggregator` as ``inner``, so the pseudo-gradient the
+    optimizer consumes is the PRIVATIZED mean delta -- clipped per client,
+    noised, uniformly averaged. That is post-processing, so epsilon at this
+    fixed ``z`` is exactly the fixed-clip arm's. Built fresh per run: both the
+    optimizer moments and TFF's process state are cross-round state.
+    """
+    from fl.aggregation import make_aggregator
+
+    return make_aggregator(
+        dp_enabled=True,
+        noise_multiplier=z,
+        l2_clip_norm=DP_CLIP,
+        clients_per_round=FEMNIST_M,
+        server_optimizer=arm["name"],
+        server_learning_rate=arm["server_lr"],
+        server_momentum=arm.get("momentum", 0.9),
+    )
+
+
+def _femnist_dp_run(population: tuple, seed: int, label: str, aggregator: object, z: float) -> dict:
+    import femnist_experiments as fx
+
+    train, test, shards = population
+    return fx.simulate(
+        train=train,
+        test=test,
+        shards=shards,
+        clients_per_round=FEMNIST_M,
+        rounds=ROUNDS,
+        dp=True,
+        noise_multiplier=z,
+        l2_clip_norm=DP_CLIP,
+        seed=seed,
+        local_epochs=FEMNIST_LOCAL_EPOCHS,
+        aggregator=aggregator,
+        label=label,
+    )
+
+
+def phase_e(population: tuple) -> dict:
+    """FedOpt over the PRIVATIZED delta, at the recorded DP operating point.
+
+    The question: does adaptive server optimization recover part of the 4.6 pp
+    the DP arm costs? Everything is matched to docs/_final_batch_b.json -- same
+    clip, same target epsilon, same budget, same seeds -- so the only variable
+    is the server step.
+
+    Unlike phases A-D this phase IS stochastic beyond the seed: TFF draws DP
+    noise unseedably, so these runs reproduce in distribution, not bit-for-bit.
+    Each completed run is checkpointed to _fedopt_batch_e_partial.json, so an
+    interrupted phase resumes mid-arm rather than restarting.
+    """
+    from fl.aggregation import calibrate_noise_multiplier, compute_epsilon
+
+    recorded = _recorded_dp_arm()
+    control = _recorded_femnist_control()
+    q = FEMNIST_M / FEMNIST_WRITERS
+    z = calibrate_noise_multiplier(DP_TARGET_EPSILON, q, ROUNDS, DP_DELTA)
+    achieved = compute_epsilon(z, q, ROUNDS, DP_DELTA)
+    LOGGER.info("PHASE E: q=%.3f calibrated z=%.6f (achieved eps=%.6f)", q, z, achieved)
+    if recorded is not None and abs(z - recorded["calibrated_z"]) > 1e-9:
+        LOGGER.warning(
+            "PHASE E: calibrated z=%.9f differs from the recorded arm's %.9f; "
+            "the comparison is no longer matched on the mechanism",
+            z,
+            recorded["calibrated_z"],
+        )
+
+    partial_path = DOCS / "_fedopt_batch_e_partial.json"
+    done: dict[str, dict] = {}
+    if partial_path.exists():
+        done = json.loads(partial_path.read_text(encoding="utf-8"))
+        LOGGER.info("PHASE E: resuming, %d run(s) already on disk", len(done))
+
+    arms: dict[str, dict] = {}
+    for arm in DP_ARMS:
+        name = arm["name"]
+        runs = []
+        for seed in SEEDS:
+            label = f"femnist/dp+{name}/seed={seed}"
+            if label in done:
+                LOGGER.info("PHASE E: %s already recorded, skipping", label)
+                runs.append(done[label])
+                continue
+            run = _femnist_dp_run(population, seed, label, _dp_fedopt_aggregator(arm, z), z)
+            run["server_optimizer"] = dict(arm)
+            runs.append(run)
+            done[label] = run
+            _write(partial_path, done)
+            LOGGER.info(
+                "PHASE E RUN %s: final=%.4f eps=%.4f", label, run["final_accuracy"], run["epsilon"]
+            )
+        arms[name] = {"config": dict(arm), "runs": runs, "summary": _summary(runs)}
+        LOGGER.info(
+            "PHASE E ARM %s: mean=%.4f range=%.4f vs DP arm %.4f, no-DP control %.4f",
+            name,
+            arms[name]["summary"]["mean_final"],
+            arms[name]["summary"]["range_final"],
+            recorded["mean_final"] if recorded else float("nan"),
+            control["mean_final"] if control else float("nan"),
+        )
+
+    deltas_vs_dp = (
+        {n: arms[n]["summary"]["mean_final"] - recorded["mean_final"] for n in arms}
+        if recorded
+        else None
+    )
+    residual = (
+        {n: control["mean_final"] - arms[n]["summary"]["mean_final"] for n in arms}
+        if control
+        else None
+    )
+    if partial_path.exists():
+        partial_path.unlink()
+    return {
+        "phase": "E",
+        "dataset": "femnist",
+        "writers": FEMNIST_WRITERS,
+        "clients_per_round": FEMNIST_M,
+        "rounds": ROUNDS,
+        "local_epochs": FEMNIST_LOCAL_EPOCHS,
+        "seeds": list(SEEDS),
+        "dp": True,
+        "l2_clip_norm": DP_CLIP,
+        "target_epsilon": DP_TARGET_EPSILON,
+        "delta": DP_DELTA,
+        "calibrated_z": z,
+        "achieved_epsilon": achieved,
+        "composition_note": (
+            "the server optimizer is applied to the DP aggregator's privatized "
+            "output (FedOptAggregator wrapping DPFedAvgAggregator), which is "
+            "post-processing: achieved_epsilon here is computed from the same "
+            "(z, q, rounds) as the fixed-clip arm and is identical to it"
+        ),
+        "tuning_note": (
+            "server LRs transferred from the Fashion sweep (phase A) and never "
+            "re-tuned under DP; noise changes the loss surface the server step "
+            "sees, so these are borrowed hyperparameters twice over"
+        ),
+        "seed_note": (
+            "DP noise is drawn unseedably by TFF, so unlike phases A-D these "
+            "runs reproduce in distribution, not bit-for-bit"
+        ),
+        "dp_arm_control": recorded,
+        "nodp_control": control,
+        "arms": arms,
+        "delta_vs_dp_arm_mean": deltas_vs_dp,
+        "residual_dp_cost_mean": residual,
+    }
+
+
 def _write(path: Path, payload: dict) -> None:
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(payload, indent=1), encoding="utf-8")
@@ -410,12 +621,13 @@ def main() -> int:
     _run_or_load("b", lambda: phase_b(a["selection"]))
 
     need_population = not all(
-        (DOCS / f"_fedopt_batch_{letter}.json").exists() for letter in ("c", "d")
+        (DOCS / f"_fedopt_batch_{letter}.json").exists() for letter in ("c", "d", "e")
     )
     population = _load_femnist_population() if need_population else None
     _run_or_load("c", lambda: phase_c(population, a["selection"]))
     _run_or_load("d", lambda: phase_d(population))
-    LOGGER.info("BATCH COMPLETE: all four phases on disk")
+    _run_or_load("e", lambda: phase_e(population))
+    LOGGER.info("BATCH COMPLETE: all five phases on disk")
     return 0
 
 
