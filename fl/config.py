@@ -205,11 +205,14 @@ class ServerOptimizerConfig:
     reads the learning rate alone. Unread fields are ignored, not rejected,
     so one config file can flip between optimizers by changing one line.
 
-    Not composable with differential privacy (cross-field check below): the
-    FedOpt path applies to the *weighted* mean, whose per-client sensitivity
-    is unbounded. Post-processing the noised uniform mean would be sound DP,
-    but this repo has not wired or measured that composition, and running an
-    unmeasured mechanism behind a config flag is how accounting fictions ship.
+    Composable with differential privacy. Under ``privacy.enabled`` the server
+    optimizer is applied to the DP aggregator's *privatized* delta -- clipped
+    per client, noised, uniformly averaged -- which is post-processing, so the
+    reported epsilon at a fixed noise multiplier is unchanged. What is not
+    sound, and is unreachable by construction, is an optimizer over the
+    sample-count-weighted mean under DP: that mean's per-client influence
+    ``n_k / sum(n)`` depends on private data, so no constant sensitivity bound
+    exists for it. See :class:`fl.aggregation.FedOptAggregator`.
     """
 
     name: str = "fedavg"
@@ -370,20 +373,13 @@ class Config:
             f"server.min_clients_per_round ({self.server.min_clients_per_round}); "
             "every round would fail quorum",
         )
-        _require(
-            not (
-                self.privacy.enabled
-                and (
-                    self.server_optimizer.name != "fedavg"
-                    or self.server_optimizer.learning_rate != 1.0
-                )
-            ),
-            f"server_optimizer {self.server_optimizer.name!r} "
-            f"(learning_rate={self.server_optimizer.learning_rate}) cannot be combined "
-            "with privacy.enabled: the FedOpt path applies to the weighted mean, whose "
-            "per-client sensitivity is unbounded, so the DP accounting would not hold. "
-            "Run FedOpt without DP, or DP with the default fedavg server step.",
-        )
+        # No cross-field check between privacy.enabled and server_optimizer.
+        # Under DP the server optimizer wraps the DP aggregator's privatized
+        # output (fl/aggregation.py, make_aggregator), which is post-processing:
+        # epsilon at fixed noise_multiplier is unchanged, and the accounting
+        # inputs (z, q, R) never see the optimizer. The combination that would
+        # break accounting -- an optimizer over the sample-count-weighted mean
+        # under DP -- is unreachable by construction, not by validation.
 
     @property
     def clients_per_round(self) -> int:

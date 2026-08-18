@@ -284,27 +284,33 @@ def test_server_optimizer_out_of_range_values_rejected(payload, message):
         Config.from_dict({"server_optimizer": payload})
 
 
-def test_server_optimizer_with_dp_is_rejected():
-    """The cross-field refusal: FedOpt applies to the weighted mean, whose
-    per-client sensitivity is unbounded, so DP accounting cannot hold over it."""
-    with pytest.raises(ConfigError, match="cannot be combined with privacy.enabled"):
-        Config.from_dict(
-            {
-                "privacy": {"enabled": True, "noise_multiplier": 1.0},
-                "server_optimizer": {"name": "fedadam", "learning_rate": 0.1},
-            }
-        )
+def test_server_optimizer_with_dp_is_accepted():
+    """The former cross-field refusal is gone. Under DP the server optimizer
+    wraps the DP aggregator's privatized delta, which is post-processing: the
+    reported epsilon at a fixed noise multiplier is unchanged (asserted in
+    tests/test_server_optimizer.py::TestDpPostProcessing)."""
+    config = Config.from_dict(
+        {
+            "privacy": {"enabled": True, "noise_multiplier": 1.0},
+            "server_optimizer": {"name": "fedadam", "learning_rate": 0.1},
+        }
+    )
+    assert config.privacy.enabled
+    assert config.server_optimizer.name == "fedadam"
+    assert config.server_optimizer.learning_rate == 0.1
 
 
-def test_damped_fedavg_with_dp_is_rejected_too():
-    """fedavg at server lr != 1.0 is a server step like any other; DP refuses it."""
-    with pytest.raises(ConfigError, match="cannot be combined with privacy.enabled"):
-        Config.from_dict(
-            {
-                "privacy": {"enabled": True, "noise_multiplier": 1.0},
-                "server_optimizer": {"learning_rate": 0.5},
-            }
-        )
+def test_damped_fedavg_with_dp_is_accepted_too():
+    """fedavg at server lr != 1.0 is a server step like any other."""
+    config = Config.from_dict(
+        {
+            "privacy": {"enabled": True, "noise_multiplier": 1.0},
+            "server_optimizer": {"learning_rate": 0.5},
+        }
+    )
+    assert config.privacy.enabled
+    assert config.server_optimizer.name == "fedavg"
+    assert config.server_optimizer.learning_rate == 0.5
 
 
 def test_dp_with_default_server_optimizer_still_valid():
