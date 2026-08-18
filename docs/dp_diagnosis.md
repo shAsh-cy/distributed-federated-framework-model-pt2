@@ -908,6 +908,152 @@ answer than any fixed constant.
 
 ---
 
+## Where this mechanism sits, and what DP-FTRL would change
+
+This repo's DP path is DP-SGD-style: independent Gaussian noise per round, a
+per-client clip, and an epsilon that claims **amplification by subsampling** —
+`compute_epsilon` composes `PoissonSampledDpEvent(q, GaussianDpEvent(z))` over
+`rounds`. The clip is either fixed or adapted by the quantile mechanism of
+Andrew et al. ([arXiv:1905.03871](https://arxiv.org/abs/1905.03871)), the same
+mechanism Google uses for Gboard. This section records why that is the choice
+here and what the current production frontier does differently. **No migration
+is implemented or planned; this documents that the frontier is known.**
+
+### What amplification buys, and what it costs
+
+Subsampling amplification is the reason the numbers in this document are as
+small as they are: at q = 0.2 and z ≈ 1.11 over 20 rounds, ε = 6.23. Without
+amplification the same noise would buy a much weaker guarantee. The cost is that
+the guarantee is only as good as the sampling assumption behind it, and that
+assumption is a strong one — each round's cohort must be a uniformly random
+subset drawn independently.
+
+Kairouz et al. ([arXiv:2103.00039](https://arxiv.org/abs/2103.00039), ICML 2021)
+are direct about why that fails in production cross-device FL: such tools
+*"require that each mini-batch is a perfectly (uniformly) random subset of the
+training data… in federated learning… uniform sampling/shuffling may be
+infeasible to achieve because of widely varying available population at each
+time step."* Choquette-Choo et al.
+([arXiv:2306.08153](https://arxiv.org/abs/2306.08153) §3) make it concrete:
+devices self-select on eligibility — plugged in, unmetered wifi, idle — and
+*"an extreme (but realistic depending on time of day) setting may have only 6500
+devices meeting eligibility criteria"* for a round that needs 6,500. Google's
+own framing adds that uniform subsampling from a large population *"would be
+complex and hard to verify."*
+
+> **An open discrepancy in this repo, recorded here because this is the section
+> that would hide it.** The accounting above assumes Poisson subsampling, but
+> both execution paths sample a **fixed-size** cohort without replacement —
+> `fl/server.py` (`_sample_cohort`) and `scripts/femnist_experiments.py` both
+> call `rng.choice(..., size=k, replace=False)`. Fixed-size sampling without
+> replacement is not the mechanism `PoissonSampledDpEvent` accounts for, and the
+> substitution is not automatically conservative. Compounding it, `q` is
+> computed from the *configured* population while the server samples from
+> *registered* clients. This predates the FedOpt work and is orthogonal to it;
+> it is recorded as a known gap in the accounting, not as a resolved question.
+> Every ε in this document inherits it.
+
+That discrepancy is exactly the class of fragility DP-FTRL removes, which is why
+it belongs in this section rather than a footnote.
+
+### DP-FTRL: correlated noise instead of amplification
+
+DP-FTRL privatizes the **prefix sums** of the updates rather than each update
+independently, using the tree-aggregation trick, and so adds noise that is
+*correlated across rounds* — informally, noise added at one step is subtracted
+at a later one, so it partially cancels in the running sum. Kairouz et al.,
+verbatim: *"it deviates from DP-SGD by adding correlated noise across time
+steps, as opposed to independent noise. This particular aspect of DP-FTRL allows
+it to get strong privacy/utility trade-off without relying on privacy
+amplification."* The abstract is blunter: DP-FTRL *"does not use any form of
+privacy amplification."*
+
+Two consequences matter here:
+
+- **No sampling assumption to violate.** The guarantee does not depend on how
+  the cohort was drawn, which removes the discrepancy noted above by
+  construction rather than by fixing the sampler.
+- **Utility.** The paper reports DP-FTRL *"significantly outperforms
+  un-amplified DP-SGD at all privacy levels"*, and in the higher-accuracy /
+  lower-privacy regime it *"outperforms even amplified DP-SGD"* — the regime
+  this repo operates in at ε ≈ 6. Note the original paper states this
+  qualitatively, with plots rather than tables; the crisp per-epsilon margins
+  often quoted for the ε ≈ 1–10 band come from the later matrix-factorization
+  work and are largely centralized-training results, so they should not be
+  attributed to the FL setting without checking.
+
+**Banded matrix factorization** ([arXiv:2306.08153](https://arxiv.org/abs/2306.08153))
+generalises the tree to an optimized factorization and constrains it to a banded
+structure, which makes multi-participation sensitivity tractable and restores
+compatibility with amplification where sampling *is* available.
+**BLT-DP-FTRL** ([arXiv:2408.08868](https://arxiv.org/abs/2408.08868)) —
+Buffered Linear Toeplitz — is the memory-efficient production variant: it
+matches banded-MF utility using a handful of buffers instead of hundreds of
+bands, parameterized in production by only eight numbers at d = 4 buffers over
+n = 4,000 rounds. The problem it solves is the state cost of carrying a
+factorization on a server coordinating millions of devices.
+
+### The production reference point
+
+Gboard is the deployment to compare against, and the details are worth stating
+precisely because the headline number travels without them.
+
+- The first production neural network trained on user data with a formal DP
+  guarantee was the **Spanish-in-Spain (es-ES) next-word-prediction model**,
+  deployed February 2022 with DP-FTRL: ρ = 0.81 zCDP, restated in Google's 2024
+  blog as **(ε = 8.9, δ = 1e-10)**. A ~1.3 M-parameter RNN, 2,000 rounds over six
+  days, 6,500 devices per round, each device limited to one participation per
+  24 hours.
+- The unit is **device-level** DP under the zero-out adjacency, in the central
+  model with the service provider trusted. For single-device users that is
+  user-level; for shared devices it is stronger; for one user with several
+  devices it is weaker.
+- **ε = 8.9 is one model's number, not "Gboard's epsilon"**, and it did not
+  stay there: it was improved to 5.37 via longer participation timers and then
+  to 3.42 by moving to matrix-factorization DP-FTRL. As of February 2024 the
+  strongest reported guarantees are **ε = 0.994 at δ = 1e-10** (pt-BR and es-US),
+  with 12,000+ devices per round. Across 20+ deployed models the range is
+  ρ ∈ (0.2, 2), which at δ = 1e-10 is roughly ε ∈ [4.5, 13.7]
+  ([arXiv:2305.18465](https://arxiv.org/abs/2305.18465)).
+- Google explicitly **does not** account for hyperparameter tuning or final
+  checkpoint selection in these figures. Neither does this repo, and the same
+  caveat applies with more force here, since every sweep in this document
+  compares many runs over the same population.
+
+### One production detail that corroborates this repo's own result
+
+Gboard does use the Andrew et al. quantile-based adaptive clipping — but,
+per [arXiv:2305.18465](https://arxiv.org/abs/2305.18465) §2.1 and §4, as a
+**tuning stage**: adaptive clipping at a small report goal estimates the clip
+norm and server learning rate, and *"DP-FTRL with fixed clip and large report
+goal is used to run the final model."* The paper reports that *"a fixed clip
+norm can achieve comparable or slightly better model utility, and is more robust
+in experiments with large report goal"*, and that adaptive clipping on the de-DE
+model *"experiences catastrophic failure and makes no progress in the first 1000
+rounds."*
+
+That is independently the conclusion this repo reached from its own
+measurements: the fixed clip stays the default, adaptive clipping is opt-in, and
+the cold-start failure mode is real (see `docs/adaptive_clipping.md` — cold-started
+adaptive clipping never catches the bracketed fixed arm, 54.8 % vs 62.4 % at
+R = 100). Two independent routes to the same operating decision is the strongest
+evidence this repo has for it.
+
+### Why the current choice, then
+
+Amplification-by-sampling with quantile adaptive clipping is the right mechanism
+for what this repo *is*: a single-host, fully-controlled simulation in which the
+cohort genuinely is drawn by the server from a known population, where the
+sampling assumption is at least in principle satisfiable, and where TFF supplies
+the aggregator and accountant directly. DP-FTRL's advantages are advantages in
+the setting this repo explicitly does not have — millions of self-selecting
+devices whose availability the server cannot control. The honest summary is that
+the current mechanism is appropriate to the current scope and would be the wrong
+one at production scale, and that the sampling discrepancy noted above should be
+resolved on its own terms rather than by adopting a new mechanism family.
+
+---
+
 ## Reproducing
 
 ```bash
