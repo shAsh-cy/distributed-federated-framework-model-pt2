@@ -207,6 +207,48 @@ def weighted_mean(values, weights) -> float:
     return float((v * w).sum() / total)
 
 
+def paired_profile_alignment(
+    train_labels, shards, test_labels, test_shards, num_classes: int
+) -> np.ndarray:
+    """Per client: how much better its held-out labels match *its own* training
+    labels than another client's.
+
+    Each client is its own control -- its own-correlation minus the mean of its
+    correlations against every other client's test profile. The pairing is what
+    makes the number stable: comparing one group's median against another
+    group's, using a single arbitrary mismatched pairing, resolves on the
+    pairing rather than on the data (measured: sweeping the offset moved that
+    statistic between -0.05 and +0.20 on FEMNIST).
+
+    This is what a locally fitted head has to work with. Where it is near zero,
+    the client's held-out labels look like anyone's, and there is nothing for a
+    head to specialise to -- either because the client genuinely is not skewed,
+    or because its test shard is too small to show that it is.
+    """
+    def profiles(labels, index_lists):
+        labels = np.asarray(labels).reshape(-1)
+        counts = np.stack(
+            [np.bincount(labels[idx], minlength=num_classes).astype(float) for idx in index_lists]
+        )
+        return counts / np.maximum(counts.sum(axis=1, keepdims=True), 1.0)
+
+    def unit_centred(matrix):
+        centred = matrix - matrix.mean(axis=1, keepdims=True)
+        norms = np.linalg.norm(centred, axis=1, keepdims=True)
+        return centred / np.where(norms == 0, 1.0, norms)
+
+    if len(shards) != len(test_shards):
+        raise ValueError(
+            f"shard lists disagree on client count: {len(shards)} vs {len(test_shards)}"
+        )
+    correlations = unit_centred(profiles(train_labels, shards)) @ unit_centred(
+        profiles(test_labels, test_shards)
+    ).T
+    own = np.diag(correlations).copy()
+    np.fill_diagonal(correlations, np.nan)
+    return own - np.nanmean(correlations, axis=1)
+
+
 @dataclass(frozen=True)
 class WireSaving:
     """What withholding the head saves per model transfer."""

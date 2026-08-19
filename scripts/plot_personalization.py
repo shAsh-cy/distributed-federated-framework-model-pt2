@@ -218,9 +218,19 @@ def main(argv: list[str] | None = None) -> int:
         f"Per-client accuracy, {dataset}: global vs personalized "
         f"(N={phase['num_clients']}, m={phase['clients_per_round']}, R={phase['rounds']})"
     )
+    # The ECDF is the SECONDARY figure and is drawn over the whole population,
+    # threshold or no threshold; the headline statistics live in the JSON. Saying
+    # so on the figure keeps the two from being read as the same number.
+    threshold = phase.get("headline_min_test_samples", 0)
+    scope = (
+        f"all {phase['comparison']['clients_scored']} scorable clients; "
+        f"headline statistics use the {phase['comparison']['selection_effect']['clients_kept']} "
+        f"with >= {threshold} held-out samples"
+        if threshold
+        else f"all {phase['comparison']['clients_scored']} scorable clients"
+    )
     subtitle = (
-        f"{phase['comparison']['clients_scored']} clients with held-out data, "
-        f"{len(phase['comparison']['seeds'])} seeds, "
+        f"{scope}, {len(phase['comparison']['seeds'])} seeds, "
         f"per-client test data: {phase['per_client_test_data']}"
     )
     out = Path(args.out)

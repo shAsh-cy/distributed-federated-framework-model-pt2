@@ -256,10 +256,16 @@ python scripts/plot_personalization.py --phase docs/_personalization_b.json \
     --out docs/personalization_ecdf_fashion.svg
 ```
 
-| Phase | Population | Budget | Arms | Output | Est. |
-|---|---|---|---|---|---|
-| **A** | FEMNIST, 1,000 writers | m=200, R=20, E=10 (FedRep: 2 head + 8 backbone) | FedRep, FedAvg (+ fine-tune control), 3 seeds each | `docs/_personalization_a.json` | ~5 h |
-| **B** | Fashion-MNIST, N=100, α=0.1 | m=50, R=20, E=2 (FedRep: 1 head + 1 backbone) | same | `docs/_personalization_b.json` | ~45 min |
+Phases run **B first, then A** (the launcher default, `--phases B,A`). B is 45
+minutes against A's five hours and is also the cleaner signal — Fashion at
+α = 0.1 is close to pure label skew, which is the shift a local head can absorb —
+so a harness fault at full scale surfaces in 45 minutes rather than five hours. A
+phase whose JSON already exists is skipped, so a rerun resumes at A.
+
+| Phase | Population | Budget | Arms | Headline scope | Output | Est. |
+|---|---|---|---|---|---|---|
+| **B** (first) | Fashion-MNIST, N=100, α=0.1 | m=50, R=20, E=2 (FedRep: 1 head + 1 backbone) | FedRep, FedAvg (+ fine-tune control), 3 seeds each | all clients | `docs/_personalization_b.json` | ~45 min |
+| **A** | FEMNIST, 1,000 writers | m=200, R=20, E=10 (FedRep: 2 head + 8 backbone) | same | ≥ 30 held-out samples (254 of 1,000) — §9 | `docs/_personalization_a.json` | ~5 h |
 
 > **Machine-time provenance.** The suite above was run in `fl-dev-torch` on this
 > host on **2026-08-19, 12:22:04–12:26:51 UTC** (17:52:04–17:56:51 +05:30),
@@ -296,15 +302,66 @@ Dirichlet draw) form the population. That is what makes the per-client arrays
 comparable across seeds, so a client's accuracy is averaged over seeds *before*
 the distribution is taken.
 
-## 9. Results
+## 9. Which clients the headline is computed over
 
-**Not yet run.** When phases A and B complete, this section will carry: the three
-per-client distributions per phase (median, quartiles, worst and best decile), the
-paired deltas with the fraction of clients improved and worsened, the split
-between the fine-tuning control and the FedRep effect, and the two ECDFs. The raw
-per-client arrays will be in `docs/_personalization_{a,b}.json`.
+Phase A's headline statistics — worst decile and median paired gap — are computed
+over the **254 of 1,000 writers with at least 30 held-out samples**, and the
+full-population figures are reported beside them as secondary, including the
+ECDF. Phase B has no threshold: Fashion's median client has 69 held-out samples.
+This is a reporting decision only; nothing about the runs changes, both scopes
+come out of the same JSON, and `compare_arms` computes every comparison twice.
 
-## 10. What this design will not answer
+The reason is §10: at 18 held-out samples over 62 classes a per-client accuracy
+is quantised into eighteenths and carries roughly ±0.11 of binomial noise, which
+seed-averaging cannot touch because every seed scores the same 18 samples. A
+worst-decile figure over that population measures shard size more than it
+measures who the model serves badly.
+
+**The threshold is not free, and both halves of what it selects for push the same
+way.** Measured on the phase A population (1,000 writers, seed 42):
+
+| | kept (≥ 30 test) | dropped (< 30 test) |
+|---|---|---|
+| writers | 254 | 746 |
+| held-out samples | 9,090 (40.2 % of all) | 13,549 |
+| median test shard | 36 | 18 |
+| median train shard | **316** | **154** |
+| median paired label alignment | **+0.244** | **+0.052** |
+| classes present, median | 57 of 62 | 51 of 62 |
+| binomial sd at p = 0.5 | ≤ 0.091 | up to 0.250 |
+
+1. **More data.** Kept writers have twice the training shard and twice the test
+   shard. Their local head has more to fit *and* their accuracy is estimated
+   about 2.7× more precisely. This is the sub-population where personalization
+   is most **measurable**.
+2. **More distinctive label priors.** Their held-out labels match their own
+   training labels far better than another writer's (+0.244 against +0.052 —
+   `fl.personalization.paired_profile_alignment`), so there is more per-client
+   label structure for a head to exploit. This is the sub-population where
+   personalization is most **favoured**.
+
+So a gain measured on the ≥ 30 subset is an **upper bound on the gain across the
+whole population, not an estimate of it**, and the full-population figures are
+the ones to quote when the question is "what would this do to the federation".
+One honest counterweight, stated because it cuts the other way: FedAvg weights by
+sample count, so these same writers contribute proportionally more to the global
+model and the global baseline is somewhat better fitted to them — which shrinks
+the delta rather than inflating it. The net direction still favours
+personalization; naming the size of that offset would need a run that is not in
+this budget. The selection numbers above are recomputed per phase and written to
+`comparison.selection_effect` in the phase JSON, so they cannot drift from the
+population actually used.
+
+## 10. Results
+
+**Not yet run.** When phases A and B complete, this section will carry, for each
+phase and at both scopes: the three per-client distributions (median, quartiles,
+worst and best decile), the paired deltas with the fraction of clients improved
+and worsened, the split between the fine-tuning control and the FedRep effect,
+and the ECDF over the full population. The raw per-client arrays will be in
+`docs/_personalization_{a,b}.json`.
+
+## 11. What this design will not answer
 
 - **The head-epoch split is untuned.** `head_epochs=2` of 10 on FEMNIST and 1 of
   2 on Fashion are a-priori choices — the head is 3.45 % of the parameters and
@@ -350,7 +407,7 @@ per-client arrays will be in `docs/_personalization_{a,b}.json`.
   median client has 69 test samples and does not have this problem.
 - **No DP arm, and no comparison against Ditto or pFedMe.** See the Roadmap.
 
-## 11. Related methods, not implemented
+## 12. Related methods, not implemented
 
 On the README Roadmap, deliberately unbuilt:
 

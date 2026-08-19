@@ -45,6 +45,7 @@ from fl.personalization import (
     PersonalizationError,
     distribution_summary,
     paired_delta_summary,
+    paired_profile_alignment,
     weighted_mean,
     wire_saving,
 )
@@ -615,3 +616,169 @@ class TestArmsAreMatched:
                     head_epochs=head_epochs,
                     seed=1,
                 )
+
+
+class TestProfileAlignment:
+    """How much per-client label structure a head actually has to work with.
+
+    Used by the batch to report what phase A's >= 30-held-out-sample headline
+    threshold selects for, so it has to be right about direction and about the
+    degenerate cases.
+    """
+
+    @staticmethod
+    def _split(per_client_classes, n_train=10, n_test=5):
+        train_y, test_y, shards, test_shards = [], [], [], []
+        for classes in per_client_classes:
+            base_tr, base_te = len(train_y), len(test_y)
+            train_y += [classes[i % len(classes)] for i in range(n_train)]
+            test_y += [classes[i % len(classes)] for i in range(n_test)]
+            shards.append(np.arange(base_tr, len(train_y)))
+            test_shards.append(np.arange(base_te, len(test_y)))
+        return np.array(train_y), np.array(test_y), shards, test_shards
+
+    def test_distinct_clients_align_positively_with_their_own_data(self):
+        train_y, test_y, shards, test_shards = self._split([(0,), (1,), (2,)])
+        alignment = paired_profile_alignment(train_y, shards, test_y, test_shards, 3)
+        assert (alignment > 0).all()
+
+    def test_mispairing_the_test_shards_drives_alignment_negative(self):
+        """The control that proves the statistic measures pairing, not scale."""
+        train_y, test_y, shards, test_shards = self._split([(0,), (1,), (2,)])
+        rotated = [test_shards[1], test_shards[2], test_shards[0]]
+        assert (paired_profile_alignment(train_y, shards, test_y, rotated, 3) < 0).all()
+
+    def test_identical_clients_have_no_alignment_to_find(self):
+        """Every client the same: nothing distinguishes own from others', so the
+        paired gap must sit at zero rather than at some flattering positive."""
+        train_y, test_y, shards, test_shards = self._split([(0, 1), (0, 1), (0, 1)])
+        alignment = paired_profile_alignment(train_y, shards, test_y, test_shards, 2)
+        assert np.allclose(alignment, 0.0, atol=1e-9)
+
+    def test_mismatched_shard_lists_are_rejected(self):
+        train_y, test_y, shards, test_shards = self._split([(0,), (1,)])
+        with pytest.raises(ValueError, match="disagree on client count"):
+            paired_profile_alignment(train_y, shards, test_y, test_shards[:1], 2)
+
+
+@pytest.mark.slow
+class TestPhaseReportingEndToEnd:
+    """The reporting path, over records a real simulate() produced.
+
+    This is the failure mode worth a test of its own: every argument
+    compare_arms takes is assembled at the END of a phase, so a signature or key
+    mistake there surfaces after the compute, not before it. Phase A is five
+    hours. This runs the same assembly against a two-round, six-writer run.
+    """
+
+    def test_compare_arms_consumes_real_run_records(self, monkeypatch, synthetic_femnist):
+        import personalization_batch as pb
+        import personalization_experiments as px
+        from fl.data import dataset_num_classes, load_femnist_per_client
+        from fl.personalization import paired_profile_alignment
+
+        train, test, shards, test_shards = load_femnist_per_client(cache_path=synthetic_femnist)
+        monkeypatch.setattr(pb, "SEEDS", (42,))
+
+        runs = {}
+        for arm in pb.ARMS:
+            runs[arm] = [
+                px.simulate(
+                    model_name="femnist_cnn",
+                    train=train,
+                    test=test,
+                    shards=shards,
+                    test_shards=test_shards,
+                    method=arm,
+                    clients_per_round=3,
+                    rounds=2,
+                    local_epochs=2,
+                    head_epochs=1,
+                    batch_size=8,
+                    seed=42,
+                    label=f"smoke/{arm}",
+                )
+            ]
+
+        alignment = paired_profile_alignment(
+            train.y, shards, test.y, test_shards, dataset_num_classes("femnist")
+        ).tolist()
+        comparison = pb.compare_arms(
+            runs,
+            min_test_samples=0,
+            train_sizes=[int(sh.size) for sh in shards],
+            alignment=alignment,
+        )
+
+        # Every key the phase record and the plotter read must be present.
+        assert set(comparison) >= {
+            "headline",
+            "full_population",
+            "selection_effect",
+            "per_client_seed_mean",
+            "test_samples",
+            "per_seed",
+            "wire",
+        }
+        for scope in ("headline", "full_population"):
+            assert comparison[scope]["distributions"]["global"]["n"] > 0
+            assert comparison[scope]["paired_deltas"]["personalized_vs_global"]["n"] > 0
+            # The fine-tuning control must survive into the comparison, or the
+            # "is it FedRep or just a local head" question silently vanishes.
+            assert "finetuned" in comparison[scope]["distributions"]
+        assert len(comparison["test_samples"]) == len(shards)
+        assert comparison["selection_effect"]["clients_total"] == len(shards)
+
+        # And the figure must render from exactly this object.
+        import json
+        import xml.etree.ElementTree as ET
+
+        import plot_personalization as pp
+
+        phase = {
+            "dataset": "femnist",
+            "num_clients": len(shards),
+            "clients_per_round": 3,
+            "rounds": 2,
+            "headline_min_test_samples": 0,
+            "per_client_test_data": "natural (LEAF by-writer split)",
+            "comparison": comparison,
+        }
+        json.dumps(phase)  # the phase record must be JSON-serialisable as written
+        ET.fromstring(pp.render(pp.series_from_phase(phase), "smoke", "smoke"))
+
+    def test_a_headline_threshold_survives_the_same_path(self, monkeypatch, synthetic_femnist):
+        """Phase A passes a non-zero threshold; the synthetic writers have four
+        held-out samples each, so a threshold of 3 keeps them and 99 must fail
+        loudly rather than silently reporting an empty headline."""
+        import personalization_batch as pb
+        import personalization_experiments as px
+        from fl.data import load_femnist_per_client
+
+        train, test, shards, test_shards = load_femnist_per_client(cache_path=synthetic_femnist)
+        monkeypatch.setattr(pb, "SEEDS", (42,))
+        runs = {
+            arm: [
+                px.simulate(
+                    model_name="femnist_cnn",
+                    train=train,
+                    test=test,
+                    shards=shards,
+                    test_shards=test_shards,
+                    method=arm,
+                    clients_per_round=3,
+                    rounds=1,
+                    local_epochs=2,
+                    head_epochs=1,
+                    batch_size=8,
+                    seed=42,
+                    label=f"threshold/{arm}",
+                )
+            ]
+            for arm in pb.ARMS
+        }
+        kept = pb.compare_arms(runs, min_test_samples=3)
+        assert kept["headline"]["clients"] == len(shards)
+        assert kept["selection_effect"]["min_test_samples"] == 3
+        with pytest.raises(ValueError, match="excludes the entire population"):
+            pb.compare_arms(runs, min_test_samples=99)

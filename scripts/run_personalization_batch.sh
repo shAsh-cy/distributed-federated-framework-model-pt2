@@ -66,12 +66,15 @@ LOCK="${FL_BATCH_LOCK:-$REPO/../.fl-batch.lock}"
 LOG="${FL_BATCH_LOG:-$REPO/docs/_personalization.log}"
 POLL="${FL_POLL_SECONDS:-60}"
 MAX_ATTEMPTS="${FL_MAX_ATTEMPTS:-3}"
-# Arguments passed through to the batch. Exists so the launch path itself can be
-# exercised without committing to the five-hour phase: FL_BATCH_ARGS="--only B"
-# runs the Fashion phase alone (~45 min) and writes its own JSON, after which a
-# later full run skips it. There is no ten-second phase to smoke with, so the
-# cheap check is `--check`, which launches nothing at all.
-BATCH_ARGS="${FL_BATCH_ARGS:-}"
+# Arguments passed through to the batch. The default runs phase B FIRST: it is
+# the 45-minute Fashion phase against the five-hour FEMNIST one, and it is also
+# the cleaner signal (Fashion at alpha=0.1 is pure label skew, which is what a
+# local head can absorb). If something is wrong with the harness at full scale it
+# surfaces in 45 minutes rather than five hours, and because each phase skips a
+# JSON that already exists, a rerun picks up at A. Override to exercise the
+# launch path alone: FL_BATCH_ARGS="--only B". The zero-cost check is `--check`,
+# which launches nothing at all.
+BATCH_ARGS="${FL_BATCH_ARGS:---phases B,A}"
 # Anything running off one of these images is a federated training container.
 # Keep in step with run_compression_batch.sh: a pattern that misses the sibling's
 # image would let both run at once while each logged that the host was quiet.
@@ -165,7 +168,21 @@ main() {
     local others
     others="$(running_trainers | tr '\n' ' ')"
     log "training containers running now: ${others:-none}"
-    [ -d "$LOCK" ] && log "lock is currently held by: $(cat "$LOCK/owner" 2>/dev/null || echo '?')"
+    if [ -d "$LOCK" ]; then
+      log "lock HELD by: $(cat "$LOCK/owner" 2>/dev/null || echo '?')"
+    else
+      log "lock free"
+    fi
+    # Whether THIS batch is running is a separate question from who holds the
+    # lock, and the one a waiting launcher is usually being asked. Report it
+    # directly rather than leaving it to be inferred from the container list.
+    if docker ps --format '{{.Names}}' | grep -qx "$NAME"; then
+      log "this batch ($NAME): RUNNING"
+    elif pgrep -f "run_personalization_batch.sh" >/dev/null 2>&1; then
+      log "this batch ($NAME): QUEUED -- launcher process alive, no container yet"
+    else
+      log "this batch ($NAME): not running and no launcher process found"
+    fi
     log "check passed; nothing launched"
     return 0
   fi
