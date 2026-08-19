@@ -64,6 +64,10 @@ IMAGE="${FL_IMAGE:-fl-dev:latest}"
 DATA_DIR="${FL_DATA_DIR:-$REPO/../federated-learning-starter/data}"
 LOCK="${FL_BATCH_LOCK:-$REPO/../.fl-batch.lock}"
 LOG="${FL_BATCH_LOG:-$REPO/docs/_personalization.log}"
+# Written the moment this launcher starts waiting and removed when it exits, so
+# `--check` can answer "is it queued" exactly rather than by grepping a process
+# table. pgrep does not exist in Git Bash, which is where this actually runs.
+RUNFILE="${FL_BATCH_RUNFILE:-$REPO/../.fl-personalization-launcher.pid}"
 POLL="${FL_POLL_SECONDS:-60}"
 MAX_ATTEMPTS="${FL_MAX_ATTEMPTS:-3}"
 # Arguments passed through to the batch. The default runs phase B FIRST: it is
@@ -115,7 +119,7 @@ take_lock() {
   # Ported from run_compression_batch.sh (f6ec594), where it was found stopping
   # a live run. This launcher was copied from that script one commit earlier and
   # inherited the bug; an overnight run is exactly where it would have bitten.
-  trap 'rm -rf "$LOCK"' EXIT
+  trap 'rm -rf "$LOCK"; rm -f "$RUNFILE"' EXIT
   trap 'log "signalled; stopping"; docker stop "$NAME" >/dev/null 2>&1 || true; exit 130' INT TERM
   log "took $LOCK"
 }
@@ -162,6 +166,13 @@ run_batch() {
     sh -c "python scripts/personalization_batch.py $BATCH_ARGS >> docs/_personalization.log 2>&1"
 }
 
+claim_runfile() {
+  printf '%s pid=%s\n' "$(date -Iseconds)" "$$" > "$RUNFILE"
+  # Appended to the EXIT trap set later by take_lock(); until then this is the
+  # only cleanup, which is why it is installed here and not there.
+  trap 'rm -f "$RUNFILE"' EXIT
+}
+
 main() {
   if [ "${1:-}" = "--check" ]; then
     preflight
@@ -176,18 +187,25 @@ main() {
     # Whether THIS batch is running is a separate question from who holds the
     # lock, and the one a waiting launcher is usually being asked. Report it
     # directly rather than leaving it to be inferred from the container list.
+    local own_pid=""
+    [ -f "$RUNFILE" ] && own_pid="$(sed -n 's/.*pid=//p' "$RUNFILE" 2>/dev/null)"
     if docker ps --format '{{.Names}}' | grep -qx "$NAME"; then
-      log "this batch ($NAME): RUNNING"
-    elif pgrep -f "run_personalization_batch.sh" >/dev/null 2>&1; then
-      log "this batch ($NAME): QUEUED -- launcher process alive, no container yet"
+      log "this batch ($NAME): RUNNING (container up)"
+    elif [ -n "$own_pid" ] && kill -0 "$own_pid" 2>/dev/null; then
+      log "this batch ($NAME): QUEUED -- launcher pid $own_pid alive, no container yet"
+      log "  waiting on: $(running_trainers | tr '\n' ' ')${others:+}"
+    elif [ -n "$own_pid" ]; then
+      log "this batch ($NAME): stale run file (pid $own_pid gone); not queued, not running"
     else
-      log "this batch ($NAME): not running and no launcher process found"
+      log "this batch ($NAME): not queued and not running"
     fi
     log "check passed; nothing launched"
     return 0
   fi
 
   preflight
+  claim_runfile
+  log "queued: waiting for the host to go quiet, then for $LOCK"
   wait_for_quiet
   take_lock
   # Between the poll and the lock another launcher could have started. Re-check
