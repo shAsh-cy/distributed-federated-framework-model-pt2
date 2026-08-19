@@ -105,7 +105,15 @@ take_lock() {
     sleep "$POLL"
   done
   printf '%s pid=%s host=%s\n' "$(date -Iseconds)" "$$" "$(hostname)" > "$LOCK/owner"
-  trap 'rm -rf "$LOCK"' EXIT INT TERM
+  # A bare `trap ... TERM` releases the lock and then CARRIES ON: the handler
+  # returns, the retry loop sees the killed `docker run` as a crash, and the
+  # launcher starts the next attempt holding no lock at all. Signals must stop
+  # the launcher, so the signal traps exit; only EXIT is a pure cleanup.
+  # Ported from run_compression_batch.sh (f6ec594), where it was found stopping
+  # a live run. This launcher was copied from that script one commit earlier and
+  # inherited the bug; an overnight run is exactly where it would have bitten.
+  trap 'rm -rf "$LOCK"' EXIT
+  trap 'log "signalled; stopping"; docker stop "$NAME" >/dev/null 2>&1 || true; exit 130' INT TERM
   log "took $LOCK"
 }
 
