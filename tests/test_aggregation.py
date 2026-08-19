@@ -11,6 +11,7 @@ from fl.aggregation import (
     DPFedAvgAggregator,
     FedAvgAggregator,
     compute_epsilon,
+    effective_sampling_rate,
     l2_norm,
     make_aggregator,
     subtract,
@@ -285,6 +286,52 @@ def test_epsilon_argument_validation(kwargs, message):
     base.update(kwargs)
     with pytest.raises(ValueError, match=message):
         compute_epsilon(**base)
+
+
+# ---------------------------------------------------------------------------
+# Effective sampling rate -- the q-accounting fix
+# ---------------------------------------------------------------------------
+
+
+def test_effective_rate_is_cohort_over_registered_not_configured():
+    """q is the cohort as a fraction of the REGISTERED population. Configure a
+    population of 10, sample 5, but only 6 register: the true q is 5/6, not the
+    0.5 a configured-population computation would report."""
+    assert effective_sampling_rate(registered_clients=6, clients_per_round=5) == pytest.approx(
+        5 / 6
+    )
+    # Full registration recovers the configured rate exactly.
+    assert effective_sampling_rate(registered_clients=10, clients_per_round=5) == pytest.approx(0.5)
+
+
+def test_effective_rate_understated_q_would_overstate_privacy():
+    """The whole point: a smaller-than-configured population raises the true q,
+    which raises epsilon. Quoting the configured q reports LESS privacy loss than
+    was actually incurred -- overstating privacy. Guard the direction."""
+    configured_q = 5 / 10
+    true_q = effective_sampling_rate(registered_clients=6, clients_per_round=5)
+    assert true_q > configured_q
+    # More q => weaker amplification => larger epsilon at the same mechanism.
+    assert compute_epsilon(1.0, true_q, 20) > compute_epsilon(1.0, configured_q, 20)
+
+
+def test_effective_rate_caps_cohort_at_the_population():
+    """If fewer register than the configured cohort size, every one of them is
+    sampled every round: q = 1.0, no amplification at all."""
+    assert effective_sampling_rate(registered_clients=3, clients_per_round=5) == 1.0
+
+
+@pytest.mark.parametrize(
+    ("registered", "cpr", "message"),
+    [
+        (0, 5, "registered clients"),
+        (-1, 5, "registered clients"),
+        (4, 0, "clients_per_round must be >= 1"),
+    ],
+)
+def test_effective_rate_argument_validation(registered, cpr, message):
+    with pytest.raises(ValueError, match=message):
+        effective_sampling_rate(registered, cpr)
 
 
 # ---------------------------------------------------------------------------

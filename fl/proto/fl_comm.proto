@@ -33,6 +33,13 @@ enum ProtocolVersion {
   PROTOCOL_VERSION_UNSPECIFIED = 0;
   PROTOCOL_VERSION_V1 = 1;
   PROTOCOL_VERSION_V2 = 2;
+  // V3 is additive over V2: same weight wire format and the same three core RPCs,
+  // plus the secure-aggregation RPCs below and one new RegisterRequest field
+  // (the client's masking public key). A V2 client and a V3 client are accepted
+  // by the same server; only a V3 client may run a secure round. The additions
+  // are new messages and new service methods, so a V2-only server simply reports
+  // the secure RPCs UNIMPLEMENTED.
+  PROTOCOL_VERSION_V3 = 3;
 }
 
 // ---------------------------------------------------------------------------
@@ -109,6 +116,12 @@ message RegisterRequest {
   // contract; a server that treats frameworks differently has broken the
   // design this field exists to help verify.
   string framework = 3;
+  // The client's Diffie-Hellman public key for pairwise masking (a 2048-bit
+  // group element, big-endian). Announced ONCE at registration so the server
+  // holds every client's key before a cohort is sampled, and a secure round's
+  // roster is then just a subset it already has. Empty for V2 clients, which do
+  // not run secure aggregation.
+  bytes masking_public_key = 4;
 }
 
 message RegisterResponse {
@@ -198,6 +211,122 @@ message SubmitUpdateResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Secure aggregation (pairwise masking, no-DP path)
+// ---------------------------------------------------------------------------
+//
+// These messages carry the Bonawitz et al. (CCS 2017) protocol that
+// fl/secure_aggregation.py implements. They are used ONLY by V3 clients running
+// a secure round; the weight payload never travels in the clear on this path.
+// A masked update is a vector of uint64 words (raw little-endian), NOT a
+// ModelWeights: masks cancel exactly only in Z_2^64, so the words are the wire
+// form and the server reshapes and unmasks them. See docs/secure_aggregation.md.
+
+// One cohort member as the rest of the cohort sees it: ordering position (fixes
+// the pairwise-mask sign convention) and public key. No secret here.
+message SecureRosterEntry {
+  string client_id = 1;
+  int32 order = 2;
+  bytes public_key = 3;  // big-endian 2048-bit group element
+}
+
+// One Shamir share of one client's one secret, held by one other client.
+// `value` is a big-endian field element of GF(2^521 - 1) (up to 66 bytes);
+// `kind` is "self_mask" or "key_seed".
+message SecureShare {
+  string owner = 1;
+  string kind = 2;
+  int32 index = 3;
+  bytes value = 4;
+}
+
+// A bundle of shares one client sends for one recipient to hold. Shares are held
+// by CLIENTS, never reconstructed by the server, which is what stops the server
+// unmasking an individual update.
+message SecureShareParcel {
+  string recipient_id = 1;
+  repeated SecureShare shares = 2;
+}
+
+// A single (owner, kind) the server asks a responder to reveal during recovery.
+message SecureRevealItem {
+  string owner = 1;
+  string kind = 2;
+}
+
+message GetSecureRoundRequest {
+  string client_id = 1;
+}
+
+// The secure analogue of GetGlobalModelResponse: adds the cohort roster and the
+// Shamir threshold. A client needs only this (plus its own secrets) to mask.
+message GetSecureRoundResponse {
+  RoundAction action = 1;
+  int32 round = 2;
+  int64 model_version = 3;
+  ModelWeights weights = 4;
+  double seconds_until_deadline = 5;
+  int32 local_epochs = 6;
+  int32 batch_size = 7;
+  double learning_rate = 8;
+  double momentum = 9;
+  repeated SecureRosterEntry roster = 10;
+  int32 threshold = 11;
+}
+
+message SubmitSecureSharesRequest {
+  string client_id = 1;
+  int32 round = 2;
+  repeated SecureShareParcel parcels = 3;
+}
+
+message SubmitSecureSharesResponse {
+  UpdateStatus status = 1;
+  string detail = 2;
+}
+
+message SubmitMaskedUpdateRequest {
+  string client_id = 1;
+  int32 round = 2;
+  int64 model_version = 3;
+  // Masked update: raw little-endian uint64 words. Length is num_words * 8.
+  bytes masked_words = 4;
+  int64 num_words = 5;
+}
+
+message SubmitMaskedUpdateResponse {
+  UpdateStatus status = 1;
+  string detail = 2;
+  int64 current_model_version = 3;
+}
+
+message GetRevealRequest {
+  string client_id = 1;
+  int32 round = 2;
+}
+
+// Sent once recovery opens: which shares this responder must reveal, and the
+// shares it holds (delivered here rather than earlier, since a client needs them
+// only to reveal). `ready` is false while the round is still collecting masked
+// updates, so the client polls.
+message GetRevealResponse {
+  bool ready = 1;
+  int32 round = 2;
+  repeated SecureRevealItem needed = 3;
+  repeated SecureShare held_shares = 4;
+}
+
+message SubmitRevealsRequest {
+  string client_id = 1;
+  int32 round = 2;
+  repeated SecureShare shares = 3;
+}
+
+message SubmitRevealsResponse {
+  UpdateStatus status = 1;
+  string detail = 2;
+}
+
+// ---------------------------------------------------------------------------
 // Service
 // ---------------------------------------------------------------------------
 
@@ -205,4 +334,12 @@ service FederatedLearning {
   rpc Register(RegisterRequest) returns (RegisterResponse);
   rpc GetGlobalModel(GetGlobalModelRequest) returns (GetGlobalModelResponse);
   rpc SubmitUpdate(SubmitUpdateRequest) returns (SubmitUpdateResponse);
+
+  // Secure-aggregation round (V3). Implemented by fl.secure_server; a plain
+  // server leaves these UNIMPLEMENTED, which a non-secure client never calls.
+  rpc GetSecureRound(GetSecureRoundRequest) returns (GetSecureRoundResponse);
+  rpc SubmitSecureShares(SubmitSecureSharesRequest) returns (SubmitSecureSharesResponse);
+  rpc SubmitMaskedUpdate(SubmitMaskedUpdateRequest) returns (SubmitMaskedUpdateResponse);
+  rpc GetRevealShares(GetRevealRequest) returns (GetRevealResponse);
+  rpc SubmitReveals(SubmitRevealsRequest) returns (SubmitRevealsResponse);
 }

@@ -96,6 +96,10 @@ class RoundMetrics:
 class _ClientRecord:
     client_id: str
     shard_index: int
+    #: The client's pairwise-masking public key (a DH group element), announced
+    #: at registration by V3 clients. 0 for V2 clients, which never run a secure
+    #: round. Read by fl.secure_server when assembling a cohort's roster.
+    masking_public_key: int = 0
 
 
 class FederatedServer(fl_comm_pb2_grpc.FederatedLearningServicer):
@@ -146,6 +150,11 @@ class FederatedServer(fl_comm_pb2_grpc.FederatedLearningServicer):
             self._tensor_names = None
         self._model_version = 0
         self._round = 0
+        #: Client population the privacy accountant samples from, frozen at the
+        #: start of run_rounds() once registration has settled. None until then.
+        #: q is derived from THIS, not from the configured num_clients — see
+        #: effective_sampling_rate and fl.aggregation.effective_sampling_rate.
+        self._dp_sampling_population: int | None = None
         self._cohort: set[str] = set()
         self._deadline_monotonic: float | None = None
         self._updates: dict[str, ClientUpdate] = {}
@@ -168,6 +177,23 @@ class FederatedServer(fl_comm_pb2_grpc.FederatedLearningServicer):
         with self._lock:
             return len(self._clients)
 
+    def effective_sampling_rate(self) -> float:
+        """The client sampling rate ``q`` the DP accountant should use.
+
+        Derived from the population the server actually samples from — the
+        registered clients, frozen at run start — not from the configured
+        ``data.num_clients``. See :func:`fl.aggregation.effective_sampling_rate`
+        for why the distinction is a privacy-correctness matter and not cosmetic.
+        Before the population is frozen (i.e. before ``run_rounds``) this falls
+        back to the current registered count.
+        """
+        from .aggregation import effective_sampling_rate
+
+        population = self._dp_sampling_population
+        if population is None:
+            population = self.num_registered
+        return effective_sampling_rate(population, self.config.clients_per_round)
+
     @property
     def model_version(self) -> int:
         with self._lock:
@@ -179,18 +205,19 @@ class FederatedServer(fl_comm_pb2_grpc.FederatedLearningServicer):
 
     # -- gRPC surface -------------------------------------------------------
 
+    _ACCEPTED_PROTOCOL_VERSIONS = (_PB.PROTOCOL_VERSION_V2, _PB.PROTOCOL_VERSION_V3)
+
     def Register(self, request, context):  # noqa: N802  (gRPC naming)
-        if request.protocol_version != _PB.PROTOCOL_VERSION_V2:
+        if request.protocol_version not in self._ACCEPTED_PROTOCOL_VERSIONS:
             LOGGER.warning(
-                "rejecting client with protocol_version=%s (server speaks %s)",
+                "rejecting client with protocol_version=%s (server speaks V2 or V3)",
                 request.protocol_version,
-                _PB.PROTOCOL_VERSION_V2,
             )
             return _PB.RegisterResponse(
                 accepted=False,
                 rejection_reason=(
                     f"protocol version mismatch: client sent {request.protocol_version}, "
-                    f"server speaks {_PB.PROTOCOL_VERSION_V2}"
+                    f"server speaks V2 or V3"
                 ),
             )
 
@@ -219,7 +246,16 @@ class FederatedServer(fl_comm_pb2_grpc.FederatedLearningServicer):
             client_id = requested or f"client-{self._next_shard}"
             if client_id in self._clients:
                 client_id = f"{client_id}-{self._next_shard}"
-            record = _ClientRecord(client_id=client_id, shard_index=self._next_shard)
+            public_key = (
+                int.from_bytes(request.masking_public_key, "big")
+                if request.masking_public_key
+                else 0
+            )
+            record = _ClientRecord(
+                client_id=client_id,
+                shard_index=self._next_shard,
+                masking_public_key=public_key,
+            )
             self._clients[client_id] = record
             self._next_shard += 1
             # `framework` is logged for observability ONLY. Nothing anywhere in
@@ -478,8 +514,31 @@ class FederatedServer(fl_comm_pb2_grpc.FederatedLearningServicer):
                 f"only {registered} client(s) registered before the timeout; "
                 f"need at least {self.config.server.min_clients_per_round}"
             )
+        # Freeze the population the accountant samples from. q is computed from
+        # THIS count, not the configured num_clients: if fewer clients registered
+        # than configured, the real q is higher, amplification weaker, and the
+        # true epsilon larger than a configured-q figure would claim. Quoting the
+        # configured rate would therefore overstate the privacy actually
+        # delivered -- the accounting bug this freeze closes.
+        self._dp_sampling_population = registered
+        configured = self.config.data.num_clients
+        if self.epsilon_fn is not None and registered != configured:
+            LOGGER.warning(
+                "DP ACCOUNTING: %d clients registered but %d were configured; "
+                "q is computed from the %d that registered (q=%.4f), so the reported "
+                "epsilon reflects the mechanism actually run and will DIFFER from the "
+                "configured target. This is deliberate: a configured-population q would "
+                "understate epsilon and overstate privacy.",
+                registered,
+                configured,
+                registered,
+                self.effective_sampling_rate(),
+            )
         LOGGER.info(
-            "starting %d rounds with %d registered clients", self.config.training.rounds, registered
+            "starting %d rounds with %d registered clients (q=%.4f)",
+            self.config.training.rounds,
+            registered,
+            self.effective_sampling_rate(),
         )
 
         for round_index in range(1, self.config.training.rounds + 1):
@@ -652,36 +711,43 @@ def build_server(config: Config) -> FederatedServer:
     initial_weights = build_model(config.model.name, seed=config.seed).get_weights()
     aggregator = aggregator_from_config(config, config.clients_per_round)
 
-    epsilon_fn = None
-    if config.privacy.enabled:
-
-        def epsilon_fn(completed_rounds: int) -> float:
-            """Cumulative epsilon after ``completed_rounds`` rounds."""
-            return compute_epsilon(
-                noise_multiplier=config.privacy.noise_multiplier,
-                sampling_rate=config.client_sampling_rate,
-                rounds=completed_rounds,
-                delta=config.privacy.delta,
-            )
-
-        LOGGER.info(
-            "client-level DP enabled: noise_multiplier=%.3f, l2_clip_norm=%.3f, q=%.3f, "
-            "delta=%.1e -> epsilon after %d rounds will be %.3f",
-            config.privacy.noise_multiplier,
-            config.privacy.l2_clip_norm,
-            config.client_sampling_rate,
-            config.privacy.delta,
-            config.training.rounds,
-            epsilon_fn(config.training.rounds),
-        )
-
-    return FederatedServer(
+    server = FederatedServer(
         config=config,
         initial_weights=initial_weights,
         aggregator=aggregator,
         evaluate_fn=build_evaluator(config.model.name, test.x, test.y),
-        epsilon_fn=epsilon_fn,
+        epsilon_fn=None,
     )
+
+    if config.privacy.enabled:
+
+        def epsilon_fn(completed_rounds: int) -> float:
+            """Cumulative epsilon after ``completed_rounds`` rounds, at the q the
+            server actually samples at (registered population, frozen at run
+            start) rather than the configured q."""
+            return compute_epsilon(
+                noise_multiplier=config.privacy.noise_multiplier,
+                sampling_rate=server.effective_sampling_rate(),
+                rounds=completed_rounds,
+                delta=config.privacy.delta,
+            )
+
+        server.epsilon_fn = epsilon_fn
+        # The authoritative epsilon is logged in run_rounds once registration has
+        # settled and the true q is known; here only the configured TARGET can be
+        # quoted, because no client has registered yet.
+        LOGGER.info(
+            "client-level DP enabled: noise_multiplier=%.3f, l2_clip_norm=%.3f, "
+            "delta=%.1e; configured target q=%.3f over %d rounds (achieved q is fixed "
+            "at run start from the registered-client count)",
+            config.privacy.noise_multiplier,
+            config.privacy.l2_clip_norm,
+            config.privacy.delta,
+            config.client_sampling_rate,
+            config.training.rounds,
+        )
+
+    return server
 
 
 def main(argv: list[str] | None = None) -> int:

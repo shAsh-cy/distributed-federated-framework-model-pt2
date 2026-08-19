@@ -311,8 +311,14 @@ class SecureServer:
         )
 
     def register(self, client: SecureClient) -> None:
-        self.roster[client.client_id] = (client.order, client.public_key)
-        self._log(client.client_id, "server", "public_key", PUBLIC_KEY_BYTES)
+        self.register_entry(client.client_id, client.order, client.public_key)
+
+    def register_entry(self, client_id: str, order: int, public_key: int) -> None:
+        """Register from primitives rather than a client object — what a
+        distributed server does, holding only the (order, public key) a remote
+        client announced, never the client itself."""
+        self.roster[client_id] = (order, public_key)
+        self._log(client_id, "server", "public_key", PUBLIC_KEY_BYTES)
 
     def broadcast_roster(self, clients: dict[str, SecureClient]) -> None:
         entry_bytes = PUBLIC_KEY_BYTES + 8
@@ -336,26 +342,54 @@ class SecureServer:
         self.submissions[client_id] = words
         self._log(client_id, "server", "masked_update", words.size * WORD_BYTES)
 
+    def reveals_needed(self) -> list[tuple[str, str]]:
+        """The (owner, kind) shares recovery requires: every survivor's self-mask
+        seed and every dropped client's key seed. This is the list a distributed
+        server sends to each responder, and the same list :meth:`unmask` collects
+        by calling into local client objects."""
+        survivors = set(self.submissions)
+        dropped = set(self.roster) - survivors
+        return [(cid, SELF_MASK) for cid in sorted(survivors)] + [
+            (cid, KEY_SEED) for cid in sorted(dropped)
+        ]
+
     def unmask(
         self, clients: dict[str, SecureClient], responders: set[str]
     ) -> tuple[np.ndarray, dict]:
         """Recover the sum: subtract survivors' self masks, cancel dropped
         clients' pairwise masks, decode. ``responders`` are the survivors
         still answering during recovery — a second dropout at this stage is
-        simply a survivor missing from this set."""
-        survivors = set(self.submissions)
-        dropped = set(self.roster) - survivors
-        needed = [(cid, SELF_MASK) for cid in sorted(survivors)] + [
-            (cid, KEY_SEED) for cid in sorted(dropped)
-        ]
+        simply a survivor missing from this set.
 
+        This is the in-process path: the server holds every client object and
+        calls :meth:`SecureClient.reveal` directly. The distributed path collects
+        the same shares as gRPC messages and hands them to :meth:`combine`; both
+        share the arithmetic in :meth:`combine`."""
+        needed = self.reveals_needed()
+        survivors = set(self.submissions)
         collected: dict[tuple[str, str], list[tuple[int, int]]] = {key: [] for key in needed}
         for responder_id in sorted(responders & survivors):
             for owner, kind in needed:
                 share = clients[responder_id].reveal(owner, kind)
                 self._log(responder_id, "server", f"reveal_{kind}", SHARE_BYTES)
                 collected[(owner, kind)].append((share.index, share.value))
+        return self.combine(collected, responders=responders & survivors)
 
+    def combine(
+        self,
+        collected: dict[tuple[str, str], list[tuple[int, int]]],
+        responders: set[str] | frozenset[str] = frozenset(),
+    ) -> tuple[np.ndarray, dict]:
+        """Turn the masked submissions plus the revealed shares into the plain
+        aggregate. Pure arithmetic over data — no client objects — so the gRPC
+        server, which never holds a remote client, calls exactly this after
+        gathering reveals as messages.
+
+        ``collected`` maps each needed ``(owner, kind)`` to the list of
+        ``(share_index, share_value)`` pairs that responders revealed for it.
+        """
+        survivors = set(self.submissions)
+        dropped = set(self.roster) - survivors
         for (owner, kind), shares in collected.items():
             if len(shares) < self.threshold:
                 raise InsufficientSharesError(
@@ -396,7 +430,7 @@ class SecureServer:
         report = {
             "survivors": sorted(survivors),
             "dropped": sorted(dropped),
-            "responders": sorted(responders & survivors),
+            "responders": sorted(set(responders) & survivors),
             "weight_sum": float(weight_sum),
             "total_bytes": int(sum(m["bytes"] for m in self.message_log)),
         }

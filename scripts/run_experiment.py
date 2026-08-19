@@ -82,17 +82,6 @@ def run(config: Config, port: int | None = None) -> dict:
 
     aggregator = aggregator_from_config(config, config.clients_per_round)
 
-    epsilon_fn = None
-    if config.privacy.enabled:
-
-        def epsilon_fn(completed_rounds: int) -> float:
-            return compute_epsilon(
-                noise_multiplier=config.privacy.noise_multiplier,
-                sampling_rate=config.client_sampling_rate,
-                rounds=completed_rounds,
-                delta=config.privacy.delta,
-            )
-
     # Bind an ephemeral port unless one was requested, so concurrent experiments
     # do not collide.
     if port is None:
@@ -104,8 +93,24 @@ def run(config: Config, port: int | None = None) -> dict:
         initial_weights=initial_weights,
         aggregator=aggregator,
         evaluate_fn=build_evaluator(config.model.name, test.x, test.y),
-        epsilon_fn=epsilon_fn,
+        epsilon_fn=None,
     )
+
+    epsilon_fn = None
+    if config.privacy.enabled:
+
+        def epsilon_fn(completed_rounds: int) -> float:
+            # q from the population the server actually samples (registered
+            # count, frozen at run start), not the configured num_clients.
+            return compute_epsilon(
+                noise_multiplier=config.privacy.noise_multiplier,
+                sampling_rate=server.effective_sampling_rate(),
+                rounds=completed_rounds,
+                delta=config.privacy.delta,
+            )
+
+        server.epsilon_fn = epsilon_fn
+
     server.start()
     address = f"127.0.0.1:{config.server.port}"
 
@@ -163,7 +168,9 @@ def run(config: Config, port: int | None = None) -> dict:
             "noise_multiplier": config.privacy.noise_multiplier,
             "l2_clip_norm": config.privacy.l2_clip_norm,
             "delta": config.privacy.delta,
-            "client_sampling_rate": config.client_sampling_rate,
+            # The q the accountant used: from the registered population (frozen
+            # at run start), not the configured num_clients.
+            "client_sampling_rate": server.effective_sampling_rate(),
             "clients_per_round": config.clients_per_round,
             "epsilon": epsilon_fn(config.training.rounds) if epsilon_fn else None,
         },

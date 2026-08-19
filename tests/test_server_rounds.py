@@ -74,6 +74,26 @@ def test_full_participation_when_fraction_is_one():
         assert len(h.server._sample_cohort()) == 3
 
 
+def test_effective_sampling_rate_uses_registered_not_configured_population():
+    """The q-accounting fix on the live server: with 10 configured and a cohort
+    of 5, if only 6 clients register the accountant's q must be 5/6 (the cohort
+    over the population that actually exists), not the configured 5/10. A q of
+    0.5 here would report more privacy than the mechanism delivers."""
+    config = make_config(data={"num_clients": 10}, training={"client_fraction": 0.5})
+    assert config.clients_per_round == 5
+    assert config.client_sampling_rate == pytest.approx(0.5)  # the configured (wrong) figure
+
+    with ServerHarness(config) as h:
+        clients = [FakeClient(h.address) for _ in range(6)]
+        for i, c in enumerate(clients):
+            assert c.register(desired=f"c{i}").accepted
+        assert h.server.num_registered == 6
+        # Cohort capped at the population; q over the registered set.
+        assert h.server.effective_sampling_rate() == pytest.approx(5 / 6)
+        for c in clients:
+            c.close()
+
+
 # ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------

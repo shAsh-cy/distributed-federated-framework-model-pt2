@@ -106,20 +106,42 @@ patch the repo cannot own. (The audit's one refinement: the abort is
 environment-wide and instant, so it cannot ship silently — CI imports
 correctly or dies loudly.)
 
-## Secure aggregation and DP are complementary, not alternatives
+## Secure aggregation wired into the no-DP path; DP composition is a distinct step
 
 Pairwise masking hides **individual updates from the server**; DP bounds
 **what the aggregate — and the released model — reveals about any one
 client**. Masking without DP still leaks through the sum; DP without
-masking leaves the server reading plaintext updates. The teaching
-implementation (`fl/secure_aggregation.py`, docs/secure_aggregation.md)
-demonstrates the protocol: masks cancelling bit-exactly in Z_2^64, Shamir
-recovery through both dropout stages, the either-or reveal rule.
-**Rejected:** wiring it into the DP path as if composition were a config
-flag. The TFF path clips and noises *centrally, after seeing individual
-updates*; real composition requires client-side clipping and distributed
-noise — a protocol change this repo documents instead of pretending to
-have. The Limitations entry stays until the wiring exists.
+masking leaves the server reading plaintext updates — the threat
+[docs/privacy_threats.md](privacy_threats.md) walks through with the inversion
+demo. They are complementary, so the design goal is *both*, and the honest
+sequencing is: wire masking first, on the no-DP path where it composes cleanly,
+and treat DP composition as the separate protocol change it actually is.
+
+**Chosen:** secure aggregation is wired into the **live gRPC training path** for
+the no-DP case (`fl/secure_server.py`, `fl/secure_client.py`, the V3 RPCs in
+`fl/proto/fl_comm.proto`). The masked update travels the normal wire as uint64
+words, the server sums and unmasks, and dropout rides the existing round
+deadline with Shamir recovery. Exactness is verified bit-exact on real float32
+weights and the quantisation error measured (docs/secure_aggregation.md).
+
+**Why no-DP, precisely.** The repo's DP is *central*: TFF's factory clips and
+noises **after** summing, which means it must **see each individual update** —
+the exact thing masking exists to prevent. Central DP and masking are therefore
+mutually exclusive on the same path, so `build_secure_server` **refuses** a
+config with `privacy.enabled` rather than quietly running one of the two.
+
+**What composing them requires: distributed DP.** Move the clip **client-side**
+(each client clips its own update to the sensitivity bound) and add the noise
+**distributively** — locally-added or share-split, so the *sum* carries the
+calibrated `N(0, (zS)^2)` the server never sees assembled. This **changes the
+accounting**: the sensitivity argument now lives at the client, and the noise is
+contributed in pieces rather than drawn once by a trusted aggregator (the total
+variance must still land at the central target, which is what makes it subtle).
+Google's **Gboard** runs exactly this in production — secure aggregation with
+**local clipping** and distributed noise. **Rejected:** presenting that as a
+config flag on the central path. It is a **named Roadmap item**; what ships today
+is the no-DP secure path plus this documented route, not a pretence of
+composition.
 
 ## The fixed clip stays the default, adaptive clipping notwithstanding
 

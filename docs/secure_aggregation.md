@@ -72,6 +72,72 @@ n = 10 to 2.10 at n = 200. For much smaller models or much larger cohorts
 the quadratic term dominates instead — which is exactly the regime the
 Bonawitz paper's efficiency work targets.
 
+## On the live training path (no-DP)
+
+The protocol is now wired into the live gRPC training path, not only the
+in-process protocol tests. A V3 client
+([fl/secure_client.py](../fl/secure_client.py)) announces its masking public key
+at registration; each round the server
+([fl/secure_server.py](../fl/secure_server.py)) publishes the cohort roster and
+global weights, the client trains as usual, Shamir-shares its secrets, and
+submits a **masked** update — a vector of uint64 words, never plaintext
+`ModelWeights`. The server sums the masked words and cancels the masks; it never
+holds an individual update. Dropout rides the existing round deadline: a client
+that misses the masked-submission barrier is recovered from survivors' shares,
+and a second drop *during* recovery is absorbed by the Shamir threshold — the
+same two-stage handling the protocol tests assert, now over real gRPC
+([tests/test_secure_grpc.py](../tests/test_secure_grpc.py): 5 clients, 2 rounds,
+one induced dropout).
+
+The distributed orchestration is a thin transport over a message-driven core
+([fl/secure_round.py](../fl/secure_round.py)) that is byte-for-byte equivalent to
+the in-process reference — asserted in
+[tests/test_secure_round.py](../tests/test_secure_round.py) — so a live-path bug
+is isolated to the wire, not the protocol.
+
+### The exactness claim, on real float32 weights
+
+The protocol tests assert the unmasked sum equals the plain sum *bit-exactly*.
+That holds on the live path with **real float32 model weights** for one reason:
+updates are quantised to fixed point and masked in Z_2^64, where addition is
+associative and masks cancel exactly. Float masks could not — `(a+m)+(b-m)` need
+not equal `a+b` in float. So exact cancellation **does** require the fixed-point
+quantisation, and the mechanism already implements it;
+[tests/test_secure_live.py](../tests/test_secure_live.py) proves it on the real
+small_cnn weight shapes (225,034 parameters): the secure aggregate is bit-exact
+to the maskless quantised weighted mean.
+
+The price is a bounded quantisation error against float FedAvg, and it is
+**measured**, not assumed. Per-element error is at most `m / (2^(F+1) · Σ n_k)`
+(`F = 24` fractional bits); on 5–20-client rounds over the real weights the
+measured maximum is ≈ **5e-12** and the mean ≈ **1e-12** — three-plus orders of
+magnitude below float32's own ~1e-7 resolution, so quantisation is not the
+pipeline's error floor. `fl.secure_live.quantization_error` reports the number
+beside its analytic bound.
+
+### What the live path costs, measured
+
+`scripts/secagg_overhead.py` measures the overhead the analytic model above
+predicts, and isolates the O(m²) term the pairwise scheme is known for:
+
+* **Bytes** track the model exactly (they are the same accounting): a 2.005×
+  ratio at m = 10 driven by uint64-vs-float32 update inflation, drifting up as
+  key-exchange and share distribution grow as m² (see the table above).
+* **Masking compute** is O(m) per client — one self mask plus m−1 pairwise masks
+  over a 225k-word vector — so **O(m²) across the cohort**. Measured per-client
+  masking time rises ≈ 48 ms → 100 ms → 196 ms for m = 5 → 10 → 20, i.e. the
+  cohort total 0.24 s → 1.0 s → 3.9 s, reaching hundreds of seconds by m = 200.
+* **Wall-clock per round** secure-vs-plain and the **dropout-recovery cost** (one
+  induced mid-round drop) are measured over real gRPC by the same script's
+  `walltime` and `dropout` phases.
+
+This quadratic scaling is exactly why **SecAgg+** (sparse neighbour graphs, each
+client masking with only O(log n) peers — what Flower ships as its production
+secure aggregation) exists: it replaces the O(m²) all-pairs masking with an
+O(m log m) graph at a controlled security cost. This teaching implementation does
+the full all-pairs scheme, and the overhead measurement is what makes the reason
+for SecAgg+ concrete rather than asserted.
+
 ## How this composes with the existing DP
 
 **Complementary, not alternatives.** Secure aggregation hides *individual
@@ -83,13 +149,23 @@ README limitation this work addresses. Together, an honest-but-curious
 server sees only a noised aggregate, and the DP guarantee holds against
 everyone downstream of it.
 
-One honest wiring caveat: the repo's TFF DP path clips and noises
-**centrally**, after the aggregator has seen individual updates. Composing
-it with masking for real requires moving the clip client-side and adding
-the noise distributively (each client contributes a noise share so the
-*sum* carries the calibrated noise) — a real protocol change, not a config
-flag. That is the gap between this module existing and the deployed paths
-using it, and the README Limitations entry states it.
+One honest wiring caveat, and it is why the live path above is **no-DP**: the
+repo's TFF DP path clips and noises **centrally**, after the aggregator has
+seen individual updates — the exact thing masking prevents. So masking wires
+into the no-DP path only; a secure server carries no DP aggregator and
+[fl/secure_server.py](../fl/secure_server.py) refuses a config with
+`privacy.enabled` rather than silently ignoring it.
+
+Composing the two for real requires **distributed DP**: moving the clip
+client-side and adding the noise distributively — each client contributes a
+noise share (or adds local noise) so the *sum* carries the calibrated noise the
+server never sees assembled. This is a real protocol change, not a config flag,
+and it **changes the accounting** — the sensitivity argument moves to the client
+and the noise is contributed in pieces rather than drawn once centrally. Google's
+Gboard runs exactly this combination in production (secure aggregation with local
+clipping and distributed noise). It is the named Roadmap item; what exists today
+is the no-DP secure path plus the documented route to composition, not a pretence
+that composition is done.
 
 ## What masking does NOT do
 
