@@ -229,7 +229,12 @@ retrained head has no mechanism for it.
 
 If FEMNIST comes back flat, that is a result about *which kind of heterogeneity a
 head can absorb*, reported with the heterogeneity level in the table above — not
-a failed experiment, and not one to bury. If Fashion also comes back flat, the
+a failed experiment, and not one to bury. Note that FEMNIST is doubly
+disadvantaged here and both halves are measured, not guessed: its shift is in the
+input distribution rather than the label prior (§2), and its per-writer test
+shards are too small for the label signal that does exist to be read cleanly
+(§10). A flat FEMNIST result would be consistent with both, and would not
+distinguish them. If Fashion also comes back flat, the
 claim that personalization is worth its complexity on these splits is simply not
 supported, and this document will say so.
 
@@ -255,6 +260,17 @@ python scripts/plot_personalization.py --phase docs/_personalization_b.json \
 |---|---|---|---|---|---|
 | **A** | FEMNIST, 1,000 writers | m=200, R=20, E=10 (FedRep: 2 head + 8 backbone) | FedRep, FedAvg (+ fine-tune control), 3 seeds each | `docs/_personalization_a.json` | ~5 h |
 | **B** | Fashion-MNIST, N=100, α=0.1 | m=50, R=20, E=2 (FedRep: 1 head + 1 backbone) | same | `docs/_personalization_b.json` | ~45 min |
+
+> **Machine-time provenance.** The suite above was run in `fl-dev-torch` on this
+> host on **2026-08-19, 12:22:04–12:26:51 UTC** (17:52:04–17:56:51 +05:30),
+> capped at 2 of 6 cores, *while* `fl-compression-batch` was running (it started
+> 12:21:10 UTC and held `../.fl-batch.lock` throughout). Any compression cell
+> whose round falls in that window shares CPU with this check and should be read
+> with that in mind; no other overlap occurred in the first window. A second
+> window, **12:29:22–12:32:41 UTC** (17:59:22–18:02:41 +05:30), same cap, re-ran
+> `tests/test_femnist.py` alone after the paired-statistic fix in §10. Those two
+> windows are the only times this branch has competed with the compression batch
+> for CPU.
 
 The launcher, not a bare `python scripts/personalization_batch.py`, because the
 host has six cores and every wall-clock figure in this document is quoted per
@@ -310,11 +326,28 @@ per-client arrays will be in `docs/_personalization_{a,b}.json`.
   `clients_never_sampled`) rather than dropped or silently averaged in. On
   Fashion every client is sampled with probability 1 − 9.5×10⁻⁷, so the issue
   does not arise there.
-- **Some clients have very little held-out data.** FEMNIST's median writer has 18
-  test samples; six have fewer than ten. Fashion at α=0.1 leaves one client with
-  none (excluded and counted) and eight with fewer than ten. Every summary is
-  reported twice, once over all scorable clients and once restricted to clients
-  with ≥ 10 held-out samples, so a tail claim can be checked against both.
+- **Some clients have very little held-out data, and on FEMNIST that is the
+  binding constraint.** FEMNIST's median writer has 18 test samples; six of the
+  1,000 have fewer than ten. Fashion at α=0.1 leaves one client with none
+  (excluded and counted) and eight with fewer than ten. Every summary is reported
+  twice, once over all scorable clients and once restricted to clients with ≥ 10
+  held-out samples, so a tail claim can be checked against both.
+
+  How much this costs was measured while testing the loader, and it is worth
+  stating plainly. A writer's held-out label profile does correlate with its own
+  training profile better than with another writer's — 77 % of writers, paired
+  median gap +0.09 — so the premise holds. But the gap is **+0.22 for writers
+  with ≥ 30 held-out samples and +0.06 for writers with < 20**, and the second
+  group is most of the population. At 18 samples over 62 classes the per-writer
+  test profile is largely sampling noise. Per-client *accuracy* on 18 samples is
+  still unbiased, but it is quantised into eighteenths and carries binomial noise
+  of roughly ±0.11 at p = 0.5; averaging over three seeds shrinks the seed
+  component and none of the sampling component, because every seed scores the
+  same 18 samples. **The FEMNIST per-client distribution is therefore wide for
+  reasons that have nothing to do with personalization**, and the worst-decile
+  figure in particular will be dominated by small-shard writers. Read the
+  restricted (≥ 10, and preferably the ≥ 30) summaries alongside it. Fashion's
+  median client has 69 test samples and does not have this problem.
 - **No DP arm, and no comparison against Ditto or pFedMe.** See the Roadmap.
 
 ## 11. Related methods, not implemented
