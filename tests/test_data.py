@@ -346,3 +346,133 @@ def test_label_distribution_honours_num_classes():
     shard = np.arange(4)
     assert label_distribution(labels, shard, num_classes=62).shape == (62,)
     assert label_distribution(labels, shard, num_classes=62).sum() == 4
+
+
+# ---------------------------------------------------------------------------
+# Paired partitions: per-client TEST shards for personalized evaluation
+# ---------------------------------------------------------------------------
+
+#: Synthetic labels, so these run without loading Fashion-MNIST and so the
+#: class balance is under the test's control rather than the dataset's.
+_PAIR_RNG = np.random.default_rng(11)
+PAIR_TRAIN_Y = _PAIR_RNG.integers(0, NUM_CLASSES, size=6_000)
+PAIR_TEST_Y = _PAIR_RNG.integers(0, NUM_CLASSES, size=1_000)
+
+
+class TestPairedPartition:
+    """A client's test shard has to come from the client's own distribution.
+
+    Dealing the test split with a fresh Dirichlet draw would give client k a
+    training set skewed one way and a test set skewed another, and personalized
+    accuracy would then measure the mismatch rather than the personalization.
+    """
+
+    @pytest.mark.parametrize("alpha", (0.1, 0.5))
+    @pytest.mark.parametrize("seed", SEEDS)
+    def test_the_train_half_is_identical_to_the_unpaired_partitioner(self, alpha, seed):
+        """So a paired run stays comparable with every Dirichlet run already
+        recorded: same seed, same training split, bit for bit."""
+        from fl.data import partition_dirichlet_paired
+
+        reference = partition(
+            PAIR_TRAIN_Y, num_clients=20, scheme="dirichlet", alpha=alpha, seed=seed
+        )
+        train_shards, _test_shards = partition_dirichlet_paired(
+            PAIR_TRAIN_Y, PAIR_TEST_Y, num_clients=20, alpha=alpha, seed=seed
+        )
+        for a, b in zip(reference, train_shards, strict=True):
+            assert np.array_equal(a, b)
+
+    @pytest.mark.parametrize("alpha", (0.1, 0.5))
+    def test_test_shards_are_disjoint_and_exhaustive_over_the_test_split(self, alpha):
+        from fl.data import partition_dirichlet_paired
+
+        _train, test_shards = partition_dirichlet_paired(
+            PAIR_TRAIN_Y, PAIR_TEST_Y, num_clients=20, alpha=alpha, seed=7
+        )
+        union = np.concatenate(test_shards)
+        assert np.array_equal(np.sort(union), np.arange(PAIR_TEST_Y.size))
+        assert np.unique(union).size == union.size
+        assert all(s.max(initial=-1) < PAIR_TEST_Y.size for s in test_shards)
+
+    def test_each_client_s_test_labels_follow_its_own_training_labels(self):
+        """The property the construction exists to give.
+
+        Compared against the *shuffled* control: the same test shards paired
+        with the wrong clients must correlate visibly worse, or the check would
+        pass on any partition at all.
+        """
+        from fl.data import partition_dirichlet_paired
+
+        train_shards, test_shards = partition_dirichlet_paired(
+            PAIR_TRAIN_Y, PAIR_TEST_Y, num_clients=20, alpha=0.1, seed=3
+        )
+
+        def profile(labels, shard):
+            counts = label_distribution(labels, shard, NUM_CLASSES).astype(float)
+            return counts / max(1.0, counts.sum())
+
+        matched, mismatched = [], []
+        for cid, (tr, te) in enumerate(zip(train_shards, test_shards, strict=True)):
+            if te.size < 20:
+                continue
+            p = profile(PAIR_TRAIN_Y, tr)
+            matched.append(float(np.corrcoef(p, profile(PAIR_TEST_Y, te))[0, 1]))
+            other = test_shards[(cid + 7) % len(test_shards)]
+            if other.size >= 20:
+                mismatched.append(float(np.corrcoef(p, profile(PAIR_TEST_Y, other))[0, 1]))
+
+        assert matched, "precondition: some client must have enough held-out data"
+        assert np.median(matched) > 0.9
+        assert np.median(matched) > np.median(mismatched) + 0.3
+
+    def test_empty_test_shards_are_returned_empty_rather_than_repaired(self):
+        """Handing a client with no held-out data one of its neighbour's samples
+        would fabricate the quantity being measured. Train shards *are* repaired,
+        because a client with no training data breaks round sampling."""
+        from fl.data import partition_dirichlet_paired
+
+        train_shards, test_shards = partition_dirichlet_paired(
+            PAIR_TRAIN_Y, PAIR_TEST_Y[:40], num_clients=30, alpha=0.05, seed=5
+        )
+        assert all(s.size > 0 for s in train_shards)
+        assert any(s.size == 0 for s in test_shards), "precondition: the split must starve someone"
+        assert sum(s.size for s in test_shards) == 40
+
+    def test_iid_pairing_splits_both_sides(self):
+        from fl.data import partition_iid_paired
+
+        train_shards, test_shards = partition_iid_paired(6_000, 1_000, 20, seed=4)
+        assert sum(s.size for s in train_shards) == 6_000
+        assert sum(s.size for s in test_shards) == 1_000
+        assert np.unique(np.concatenate(test_shards)).size == 1_000
+
+    def test_invalid_arguments_are_rejected(self):
+        from fl.data import partition_dirichlet_paired
+
+        with pytest.raises(ValueError, match="num_clients must be >= 1"):
+            partition_dirichlet_paired(PAIR_TRAIN_Y, PAIR_TEST_Y, 0, 0.5)
+        with pytest.raises(ValueError, match="alpha must be > 0"):
+            partition_dirichlet_paired(PAIR_TRAIN_Y, PAIR_TEST_Y, 10, 0.0)
+
+
+def test_no_test_image_reaches_a_client_shard_under_the_paired_partition(fashion):
+    """Invariant 3, restated for the personalized loader.
+
+    The paired partitioner now touches the test split, so the content-level
+    check is repeated against it: hashing pixels proves no held-out image
+    reached a training shard even though both splits are now partitioned.
+    """
+    from fl.data import partition_dirichlet_paired
+
+    train, test = fashion
+    train_shards, test_shards = partition_dirichlet_paired(
+        train.y, test.y, num_clients=20, alpha=0.1, seed=42
+    )
+    test_hashes = {hashlib.md5(row.tobytes()).hexdigest() for row in test.x}
+    for cid, shard in enumerate(train_shards):
+        client_hashes = {hashlib.md5(row.tobytes()).hexdigest() for row in train.take(shard).x}
+        assert not client_hashes & test_hashes, f"client {cid} holds held-out images"
+    # And the mirror: every test shard indexes the test split and nothing else.
+    assert sum(s.size for s in test_shards) == len(test)
+    assert max(int(s.max()) for s in test_shards if s.size) < len(test)

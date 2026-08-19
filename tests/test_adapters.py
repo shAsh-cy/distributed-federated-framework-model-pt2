@@ -214,3 +214,135 @@ class TestMixedPoolAggregation:
         out_b = agg.aggregate(pool_b, [w.copy() for w in initial])
         for name, a, b in zip(spec.canonical_names(), out_a, out_b, strict=True):
             assert np.array_equal(a, b), f"mixed pool diverged at {name}"
+
+
+# ---------------------------------------------------------------------------
+# Personalized mode: the backbone/head surface, on both frameworks
+# ---------------------------------------------------------------------------
+
+
+class TestHeadAwareAdapters:
+    """The split must survive every conversion, in both directions, exactly.
+
+    These are the tests that make personalization portable: a TF client and a
+    torch client must agree not only on what the weights are but on which of
+    them are the head, or one framework's clients would submit tensors the
+    other's withhold.
+    """
+
+    def test_to_shared_and_head_of_partition_to_canonical(self):
+        for build, adapter_cls, model in (
+            ("tf", TFAdapter, build_tf(SMALL_CNN_SPEC, seed=13)),
+            ("torch", TorchAdapter, build_torch(SMALL_CNN_SPEC)),
+        ):
+            adapter = adapter_cls(SMALL_CNN_SPEC)
+            full = adapter.to_canonical(model)
+            shared, head = adapter.to_shared(model), adapter.head_of(model)
+            assert len(shared) == 6 and len(head) == 2, build
+            for a, b in zip(full, SMALL_CNN_SPEC.merge_weights(shared, head), strict=True):
+                assert np.array_equal(a, b), build
+
+    def test_load_shared_replaces_the_backbone_and_leaves_the_head_untouched(self):
+        """The property the whole scheme rests on: a personalized round writes
+        the received representation over the local one and does not disturb the
+        head it took the client many rounds to fit."""
+        for adapter_cls, model, other in (
+            (TFAdapter, build_tf(SMALL_CNN_SPEC, seed=21), build_tf(SMALL_CNN_SPEC, seed=22)),
+            (TorchAdapter, build_torch(SMALL_CNN_SPEC), build_torch(SMALL_CNN_SPEC)),
+        ):
+            adapter = adapter_cls(SMALL_CNN_SPEC)
+            head_before = adapter.head_of(model)
+            incoming = adapter.to_shared(other)
+            assert not all(
+                np.array_equal(a, b)
+                for a, b in zip(incoming, adapter.to_shared(model), strict=True)
+            ), "precondition: the two models must differ in the backbone"
+
+            adapter.load_shared(model, incoming)
+            for a, b in zip(incoming, adapter.to_shared(model), strict=True):
+                assert np.array_equal(a, b)
+            for a, b in zip(head_before, adapter.head_of(model), strict=True):
+                assert np.array_equal(a, b)
+
+    def test_load_head_replaces_the_head_and_leaves_the_backbone_untouched(self):
+        for adapter_cls, model, other in (
+            (TFAdapter, build_tf(SMALL_CNN_SPEC, seed=31), build_tf(SMALL_CNN_SPEC, seed=32)),
+            (TorchAdapter, build_torch(SMALL_CNN_SPEC), build_torch(SMALL_CNN_SPEC)),
+        ):
+            adapter = adapter_cls(SMALL_CNN_SPEC)
+            backbone_before = adapter.to_shared(model)
+            incoming_head = adapter.head_of(other)
+
+            adapter.load_head(model, incoming_head)
+            for a, b in zip(incoming_head, adapter.head_of(model), strict=True):
+                assert np.array_equal(a, b)
+            for a, b in zip(backbone_before, adapter.to_shared(model), strict=True):
+                assert np.array_equal(a, b)
+
+    def test_a_backbone_crosses_frameworks_and_the_local_head_stays_local(self):
+        """The full personalized exchange, TF server to torch client.
+
+        The backbone goes out through the wire encoder, arrives as bytes, is
+        rejoined with the torch client's *own* head, and the result is loaded
+        natively. Afterwards the torch model must hold TF's backbone exactly and
+        its own head exactly -- the two halves must not have swapped, blended or
+        transposed anywhere along the way.
+        """
+        from fl.serialization import proto_to_personalized_weights, shared_weights_to_proto
+
+        tf_model = build_tf(SMALL_CNN_SPEC, seed=41)
+        tf_ad, torch_ad = TFAdapter(SMALL_CNN_SPEC), TorchAdapter(SMALL_CNN_SPEC)
+        net = build_torch(SMALL_CNN_SPEC)
+
+        local_head = torch_ad.head_of(net)
+        msg = shared_weights_to_proto(SMALL_CNN_SPEC, tf_ad.to_canonical(tf_model))
+        merged = proto_to_personalized_weights(SMALL_CNN_SPEC, msg, local_head)
+        torch_ad.from_canonical(net, merged)
+
+        for a, b in zip(tf_ad.to_shared(tf_model), torch_ad.to_shared(net), strict=True):
+            assert np.array_equal(a, b)
+        for a, b in zip(local_head, torch_ad.head_of(net), strict=True):
+            assert np.array_equal(a, b)
+
+    def test_the_personalized_model_computes_the_same_function_in_both_frameworks(self):
+        """A round trip that preserves bytes but not behaviour would be worse
+        than useless, so the function is checked too."""
+        import torch
+
+        from fl.serialization import proto_to_personalized_weights, shared_weights_to_proto
+
+        tf_model = build_tf(SMALL_CNN_SPEC, seed=43)
+        tf_ad, torch_ad = TFAdapter(SMALL_CNN_SPEC), TorchAdapter(SMALL_CNN_SPEC)
+        net = build_torch(SMALL_CNN_SPEC)
+
+        merged = proto_to_personalized_weights(
+            SMALL_CNN_SPEC,
+            shared_weights_to_proto(SMALL_CNN_SPEC, tf_ad.to_canonical(tf_model)),
+            torch_ad.head_of(net),
+        )
+        torch_ad.from_canonical(net, merged)
+        net.eval()
+        reference = build_tf(SMALL_CNN_SPEC, seed=44)
+        tf_ad.from_canonical(reference, merged)
+
+        batch = RNG.random((4, 28, 28, 1)).astype(np.float32)
+        tf_out = reference(batch, training=False).numpy()
+        torch_out = net(torch.from_numpy(batch.transpose(0, 3, 1, 2).copy())).detach().numpy()
+        np.testing.assert_allclose(tf_out, torch_out, atol=1e-4, rtol=1e-4)
+
+    def test_a_head_from_the_wrong_architecture_is_refused(self):
+        from fl.archspec import FEMNIST_CNN_SPEC
+
+        adapter = TFAdapter(SMALL_CNN_SPEC)
+        model = build_tf(SMALL_CNN_SPEC, seed=51)
+        wrong = [np.zeros(s, np.float32) for s in FEMNIST_CNN_SPEC.personal_shapes()]
+        with pytest.raises(ValueError, match="head weights do not match"):
+            adapter.load_head(model, wrong)
+
+    def test_the_surface_exists_on_every_adapter_the_registry_builds(self):
+        """A new framework cannot half-implement personalization: the four
+        methods come from the shared base, not from each adapter."""
+        for framework in ("tensorflow", "torch"):
+            adapter = make_adapter(framework, SMALL_CNN_SPEC)
+            for method in ("to_shared", "head_of", "load_shared", "load_head"):
+                assert callable(getattr(adapter, method))

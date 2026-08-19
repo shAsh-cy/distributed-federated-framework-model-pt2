@@ -771,6 +771,25 @@ limitation stated above and contradicts no claim made above it.
   path still clips centrally, and composing masking with DP means client-side
   clipping plus distributed noise. Production cryptography (authenticated key
   exchange, encrypted share transport) is a further, separate distance.
+- **Personalization in the deployed paths.** FedRep — a globally aggregated
+  backbone with a per-client classifier head — is implemented and its two
+  measurement phases are queued
+  ([docs/personalization.md](docs/personalization.md)): the spec carries the
+  backbone/head marker, both framework adapters convert either half, the wire
+  format encodes backbone-only payloads and *rejects* one carrying a head, and
+  per-client evaluation runs on each client's own held-out data. What does not
+  exist is the deployed half: a container that restarts must persist its head
+  across re-registration, and the protocol needs a flag telling the server to
+  publish and expect backbone-only payloads. No config field enables
+  personalization today, deliberately — a knob that silently did nothing on the
+  gRPC path would be worse than its absence.
+- **Other personalization families.** *Ditto* (Li et al., ICML 2021): a per-client
+  model regularised toward the global one, making personalization strength a
+  single knob λ rather than an architectural cut. *pFedMe* (T. Dinh et al.,
+  NeurIPS 2020): a Moreau-envelope formulation in which each client optimises a
+  personalized model against a proximal term and the server aggregates the outer
+  models. Neither is in the code; both would be measured against the same
+  per-client distributions personalization already defines.
 - **Robust aggregation rules** (coordinate-wise median, trimmed mean, Krum) and
   update-poisoning detection, to give the system an actual threat model.
 - **Client authentication and TLS**, replacing `insecure_channel` and the

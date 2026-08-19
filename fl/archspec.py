@@ -15,6 +15,17 @@ before flattening — so that a dense-after-flatten kernel means the same thing
 in both frameworks. Without that permutation the two models would have
 identical parameter counts, identical shapes after conversion, and completely
 different functions.
+
+Every spec also carries a **personal-layers marker** (:attr:`ArchSpec.personal_layers`)
+naming the layers that form the classifier *head*; everything below them is the
+*backbone*. The marker is structural, not a mode: it says where an architecture
+splits, and callers decide whether to use the split. FedRep-style personalization
+(:mod:`fl.personalization`) aggregates the backbone globally and keeps the head
+local, and the split is defined here so that exactly one definition of "which
+tensors are the head" is visible to the adapters, the wire format and the
+harness at once. A spec with no marker splits into an all-shared backbone and an
+empty head, which is precisely FedAvg -- so the two algorithms are the same code
+path over a different marker, not two code paths.
 """
 
 from __future__ import annotations
@@ -77,21 +88,61 @@ class Dense:
 LayerSpec = Conv2D | MaxPool2D | BatchNorm | Flatten | Dense
 
 
+#: Layer types that contribute weight tensors to the canonical order. A layer
+#: outside this set (MaxPool2D, Flatten) is pure structure: it can be neither
+#: backbone nor head because it owns nothing to aggregate or keep.
+_PARAMETERISED = (Conv2D, BatchNorm, Dense)
+
+
 @dataclass(frozen=True)
 class ArchSpec:
-    """A complete architecture: input shape (H, W, C) plus an ordered layer list."""
+    """A complete architecture: input shape (H, W, C) plus an ordered layer list.
+
+    ``personal_layers`` names the layers forming the classifier head. It must be
+    a *suffix* of the parameterised layers: a head is the top of the network by
+    definition, and a "head" taken from the middle would leave aggregated layers
+    stacked on top of unaggregated ones, which is not a representation/head
+    decomposition of anything. The default ``()`` means no split is defined --
+    the whole model is backbone.
+    """
 
     name: str
     input_shape: tuple[int, int, int]
     layers: tuple[LayerSpec, ...]
+    personal_layers: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         for layer in self.layers:
             act = getattr(layer, "activation", None)
             if act not in _VALID_ACTIVATIONS:
                 raise ValueError(f"unsupported activation {act!r} on layer {layer.name!r}")
+        names = [layer.name for layer in self.layers]
+        if len(set(names)) != len(names):
+            duplicated = sorted({n for n in names if names.count(n) > 1})
+            raise ValueError(f"duplicate layer name(s) {duplicated} in spec {self.name!r}")
         # Walking the shapes validates layer compatibility eagerly.
         self.shape_walk()
+        self._validate_personal_layers()
+
+    def _validate_personal_layers(self) -> None:
+        if not self.personal_layers:
+            return
+        if len(set(self.personal_layers)) != len(self.personal_layers):
+            raise ValueError(f"personal_layers contains duplicates: {self.personal_layers}")
+        weighted = [layer.name for layer in self.layers if isinstance(layer, _PARAMETERISED)]
+        unknown = [n for n in self.personal_layers if n not in weighted]
+        if unknown:
+            raise ValueError(
+                f"personal_layers names {unknown} which are not weight-bearing layers of "
+                f"spec {self.name!r}; candidates are {weighted}"
+            )
+        suffix = weighted[len(weighted) - len(self.personal_layers) :]
+        if list(self.personal_layers) != suffix:
+            raise ValueError(
+                f"personal_layers {list(self.personal_layers)} is not the trailing run of "
+                f"weight-bearing layers in spec {self.name!r} (that would be {suffix}); the "
+                "head must be the top of the network, in spec order"
+            )
 
     def shape_walk(self) -> list[tuple[int, ...]]:
         """Activation shape after every layer, starting from ``input_shape``.
@@ -155,6 +206,91 @@ class ArchSpec:
         """Total scalar parameters (trainable + BatchNorm moving statistics)."""
         return int(sum(np.prod(s) for s in self.canonical_shapes()))
 
+    # -- backbone / head split ---------------------------------------------
+
+    def canonical_owners(self) -> list[str]:
+        """Owning layer name for every canonical tensor, parallel to
+        :meth:`canonical_names`."""
+        owners: list[str] = []
+        for layer in self.layers:
+            if isinstance(layer, Conv2D | Dense):
+                owners += [layer.name] * 2
+            elif isinstance(layer, BatchNorm):
+                owners += [layer.name] * 4
+        return owners
+
+    def personal_mask(self) -> list[bool]:
+        """Per canonical tensor: True if it belongs to the head.
+
+        This is the single source of truth the adapters, the wire encoder and
+        the harness all read. Nothing else decides what "the head" means.
+        """
+        personal = set(self.personal_layers)
+        return [owner in personal for owner in self.canonical_owners()]
+
+    def shared_names(self) -> list[str]:
+        """Wire tensor names of the backbone, in canonical order."""
+        names, mask = self.canonical_names(), self.personal_mask()
+        return [n for n, p in zip(names, mask, strict=True) if not p]
+
+    def personal_names(self) -> list[str]:
+        """Wire tensor names of the head, in canonical order."""
+        return [n for n, p in zip(self.canonical_names(), self.personal_mask(), strict=True) if p]
+
+    def shared_shapes(self) -> list[tuple[int, ...]]:
+        """Canonical shapes of the backbone tensors, matching :meth:`shared_names`."""
+        return [
+            s for s, p in zip(self.canonical_shapes(), self.personal_mask(), strict=True) if not p
+        ]
+
+    def personal_shapes(self) -> list[tuple[int, ...]]:
+        """Canonical shapes of the head tensors, matching :meth:`personal_names`."""
+        return [s for s, p in zip(self.canonical_shapes(), self.personal_mask(), strict=True) if p]
+
+    def shared_parameter_count(self) -> int:
+        """Scalar parameters in the backbone -- what a personalized round transfers."""
+        return int(sum(np.prod(s) for s in self.shared_shapes()))
+
+    def personal_parameter_count(self) -> int:
+        """Scalar parameters in the head -- what a personalized round withholds."""
+        return int(sum(np.prod(s) for s in self.personal_shapes()))
+
+    def split_weights(self, weights: list) -> tuple[list, list]:
+        """Split a full canonical weight list into ``(backbone, head)``.
+
+        Order within each part is canonical order restricted to that part, so
+        ``shared[i]`` has shape ``shared_shapes()[i]`` and name
+        ``shared_names()[i]``. :meth:`merge_weights` is the exact inverse.
+        """
+        expected = len(self.canonical_names())
+        if len(weights) != expected:
+            raise ValueError(
+                f"spec {self.name!r} has {expected} canonical tensors, got {len(weights)}"
+            )
+        mask = self.personal_mask()
+        shared = [w for w, p in zip(weights, mask, strict=True) if not p]
+        personal = [w for w, p in zip(weights, mask, strict=True) if p]
+        return shared, personal
+
+    def merge_weights(self, shared: list, personal: list) -> list:
+        """Recombine ``(backbone, head)`` into a full canonical weight list.
+
+        Shapes are checked on the way in. A head of the wrong width silently
+        merged here would produce a model that loads, trains and scores -- on
+        the wrong number of classes.
+        """
+        mask = self.personal_mask()
+        for part, got, want, label in (
+            (shared, [tuple(np.shape(w)) for w in shared], self.shared_shapes(), "backbone"),
+            (personal, [tuple(np.shape(w)) for w in personal], self.personal_shapes(), "head"),
+        ):
+            if len(part) != len(want) or got != want:
+                raise ValueError(
+                    f"{label} weights do not match spec {self.name!r}: got {got}, expected {want}"
+                )
+        shared_it, personal_it = iter(shared), iter(personal)
+        return [next(personal_it) if p else next(shared_it) for p in mask]
+
 
 # ---------------------------------------------------------------------------
 # The shipped architectures, defined once
@@ -174,6 +310,10 @@ def _cnn_spec(name: str, num_classes: int) -> ArchSpec:
             Dense(128, "dense1", activation="relu"),
             Dense(num_classes, "logits"),
         ),
+        # The head is the classifier layer alone -- FedRep's decomposition
+        # (Collins et al., ICML 2021): everything up to and including the
+        # 128-unit penultimate layer is the shared representation.
+        personal_layers=("logits",),
     )
 
 

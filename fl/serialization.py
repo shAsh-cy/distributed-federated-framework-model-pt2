@@ -8,6 +8,17 @@ Every decode is validated. A buffer whose length disagrees with its declared
 shape is rejected rather than reshaped into whatever happens to fit, because a
 truncated transfer that silently becomes a differently-shaped tensor would be
 aggregated into the global model without complaint.
+
+Personalized mode
+-----------------
+Under FedRep-style personalization the classifier head never leaves the client,
+so it must never reach this layer's output either. :func:`shared_weights_to_proto`
+encodes the backbone alone and :func:`proto_to_shared_weights` *refuses* a message
+carrying a head tensor rather than dropping it quietly -- a head on the wire is a
+protocol violation, and one that leaks exactly the per-client parameters
+personalization exists to keep local. The saving is the head's share of the
+payload and nothing more: 7,998 of 231,742 parameters (3.45 %) for
+``femnist_cnn``, 1,290 of 225,034 (0.57 %) for ``small_cnn``.
 """
 
 from __future__ import annotations
@@ -66,6 +77,61 @@ def proto_to_weights(msg: fl_comm_pb2.ModelWeights) -> Weights:
             )
         out.append(np.frombuffer(tensor.data, dtype=WIRE_DTYPE).reshape(shape).copy())
     return out
+
+
+def shared_weights_to_proto(spec, weights: Weights) -> fl_comm_pb2.ModelWeights:
+    """Encode the backbone of ``weights`` under ``spec``; the head is dropped.
+
+    ``weights`` is a full canonical weight list. What comes back carries the
+    backbone tensors only, named from the spec, so the receiver can check by
+    name that no head tensor travelled.
+    """
+    shared, _head = spec.split_weights(weights)
+    return weights_to_proto(shared, names=spec.shared_names())
+
+
+def proto_to_shared_weights(spec, msg: fl_comm_pb2.ModelWeights) -> Weights:
+    """Decode a backbone-only message, rejecting any head tensor it carries.
+
+    Three separate checks, because they fail differently: a head tensor present
+    is a *protocol* violation (the sender leaked what personalization withholds);
+    a name mismatch means the peer is speaking about a different architecture;
+    a shape mismatch means the same architecture assembled differently. None of
+    them is recoverable by guessing, so none is coerced.
+    """
+    names = [t.name for t in msg.tensors]
+    personal = set(spec.personal_names())
+    leaked = [n for n in names if n in personal]
+    if leaked:
+        raise SerializationError(
+            f"personalized payload carries head tensor(s) {leaked}; under personalization "
+            f"the head of spec {spec.name!r} is local state and must never reach the wire"
+        )
+    expected_names = spec.shared_names()
+    if names != expected_names:
+        raise SerializationError(
+            f"personalized payload names {names} do not match the backbone of spec "
+            f"{spec.name!r}, which is {expected_names}"
+        )
+    weights = proto_to_weights(msg)
+    got = [tuple(w.shape) for w in weights]
+    want = spec.shared_shapes()
+    if got != want:
+        raise SerializationError(
+            f"personalized payload shapes {got} do not match the backbone of spec "
+            f"{spec.name!r}, which is {want}"
+        )
+    return weights
+
+
+def proto_to_personalized_weights(spec, msg: fl_comm_pb2.ModelWeights, head: Weights) -> Weights:
+    """Decode a backbone-only message and recombine it with a locally held head.
+
+    This is the client-side inverse of :func:`shared_weights_to_proto`: the
+    backbone comes off the wire, the head comes out of local storage, and the
+    full canonical weight list they make is what local training starts from.
+    """
+    return spec.merge_weights(proto_to_shared_weights(spec, msg), head)
 
 
 def proto_nbytes(msg: fl_comm_pb2.ModelWeights) -> int:

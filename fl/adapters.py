@@ -24,6 +24,15 @@ identity on layout — that is the point of choosing TF's layout as canonical
 All conversions are pure axis permutations and renames: float32 values are
 preserved bit-for-bit, which the round-trip tests assert with exact equality
 rather than tolerance.
+
+Personalized mode adds four methods on top (:class:`_HeadAware`), not a second
+conversion path: ``to_shared``/``head_of`` read a model and keep one side of the
+spec's backbone/head split, ``load_shared`` writes the backbone while leaving the
+head exactly as the model already holds it, and ``load_head`` does the reverse.
+Each is composed from ``to_canonical``/``from_canonical``, so the transposes
+still live in one place and personalization inherits their correctness rather
+than restating it -- and the *same four methods work on both frameworks* because
+they never touch a native layout.
 """
 
 from __future__ import annotations
@@ -40,7 +49,43 @@ class AdapterError(ValueError):
     """Raised when weights do not match the spec the adapter was built for."""
 
 
-class TFAdapter:
+class _HeadAware:
+    """The backbone/head surface, shared by every adapter.
+
+    Framework-neutral by construction: each method is a composition of the
+    subclass's ``to_canonical``/``from_canonical`` with the spec's split, so
+    adding a framework costs nothing here and no framework can implement the
+    split differently from another.
+    """
+
+    spec: ArchSpec
+
+    def to_shared(self, model) -> Canonical:
+        """Backbone tensors only -- what a personalized client submits."""
+        return self.spec.split_weights(self.to_canonical(model))[0]
+
+    def head_of(self, model) -> Canonical:
+        """Head tensors only -- what a personalized client keeps."""
+        return self.spec.split_weights(self.to_canonical(model))[1]
+
+    def load_shared(self, model, shared: Canonical) -> None:
+        """Load a backbone, leaving the model's current head untouched.
+
+        Reading the head back out of the model first is what makes this safe:
+        the head that survives is the one the model already had, so a round of
+        personalized training cannot silently inherit another client's head or
+        a re-initialised one.
+        """
+        _current_shared, head = self.spec.split_weights(self.to_canonical(model))
+        self.from_canonical(model, self.spec.merge_weights(shared, head))
+
+    def load_head(self, model, head: Canonical) -> None:
+        """Load a head, leaving the model's current backbone untouched."""
+        shared, _current_head = self.spec.split_weights(self.to_canonical(model))
+        self.from_canonical(model, self.spec.merge_weights(shared, head))
+
+
+class TFAdapter(_HeadAware):
     """Keras <-> canonical. Layout-identity by design; validates shapes."""
 
     framework = "tensorflow"
@@ -68,7 +113,7 @@ class TFAdapter:
         model.set_weights(weights)
 
 
-class TorchAdapter:
+class TorchAdapter(_HeadAware):
     """PyTorch <-> canonical. Owns every transpose and rename; nothing leaks."""
 
     framework = "torch"

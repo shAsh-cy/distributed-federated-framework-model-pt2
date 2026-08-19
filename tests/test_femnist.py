@@ -123,6 +123,16 @@ def femnist():
     return load_femnist()
 
 
+@pytest.fixture(scope="module")
+def femnist_per_client():
+    """The same load, keeping the per-writer test shards personalization needs."""
+    from fl.data import load_femnist_per_client
+
+    if not FEMNIST_CACHE.is_file():
+        pytest.skip("FEMNIST cache not prepared")
+    return load_femnist_per_client()
+
+
 @requires_cache
 def test_real_shards_disjoint_and_union_is_train_split(femnist):
     train, _test, shards = femnist
@@ -184,3 +194,99 @@ def test_real_population_shape(femnist):
     assert train.y.max() < FEMNIST_NUM_CLASSES
     assert test.y.max() < FEMNIST_NUM_CLASSES
     assert all(s.size > 0 for s in shards)
+
+
+# -- per-writer test shards (personalized evaluation) ------------------------
+
+
+class TestPerClientTestShards:
+    """FEMNIST's answer to the hardest part of personalized evaluation.
+
+    Per-client accuracy needs each client's own held-out data. On a pooled
+    dataset that has to be constructed; here it is taken from LEAF's by-writer
+    split verbatim, so ``test_shards[i]`` is writer ``i``'s own samples as a
+    matter of provenance and not of construction. These tests hold that
+    provenance to account.
+    """
+
+    def test_test_shards_are_contiguous_disjoint_and_exhaustive(self, synthetic_cache):
+        from fl.data import load_femnist_per_client
+
+        _train, test, _shards, test_shards = load_femnist_per_client(cache_path=synthetic_cache)
+        assert len(test_shards) == WRITERS
+        offset = 0
+        for shard in test_shards:
+            assert np.array_equal(shard, np.arange(offset, offset + shard.size))
+            offset += shard.size
+        assert offset == len(test)
+        union = np.concatenate(test_shards)
+        assert np.unique(union).size == union.size == len(test)
+
+    def test_a_writer_s_test_labels_come_from_that_writer_s_own_classes(self, synthetic_cache):
+        """The pairing check. The fixture gives writer ``i`` classes
+        ``{i, i+1, i+2}`` in *both* splits, so a shard list that paired writers
+        with the wrong test blocks would show up as an out-of-range label."""
+        from fl.data import load_femnist_per_client
+
+        train, test, shards, test_shards = load_femnist_per_client(cache_path=synthetic_cache)
+        for i, (tr, te) in enumerate(zip(shards, test_shards, strict=True)):
+            assert set(np.unique(test.y[te])) <= set(range(i, i + 3))
+            assert set(np.unique(test.y[te])) <= set(np.unique(train.y[tr])) | set(range(i, i + 3))
+
+    def test_the_three_value_loader_is_the_same_split_without_the_fourth(self, synthetic_cache):
+        from fl.data import load_femnist, load_femnist_per_client
+
+        three = load_femnist(num_clients=4, seed=9, cache_path=synthetic_cache)
+        four = load_femnist_per_client(num_clients=4, seed=9, cache_path=synthetic_cache)
+        assert len(three) == 3 and len(four) == 4
+        assert np.array_equal(three[0].y, four[0].y)
+        assert np.array_equal(three[1].y, four[1].y)
+        assert all(np.array_equal(a, b) for a, b in zip(three[2], four[2], strict=True))
+
+    def test_a_subsampled_population_keeps_its_own_writers_test_data(self, synthetic_cache):
+        from fl.data import load_femnist_per_client
+
+        _train, test, shards, test_shards = load_femnist_per_client(
+            num_clients=2, seed=5, cache_path=synthetic_cache
+        )
+        assert len(shards) == len(test_shards) == 2
+        assert sum(s.size for s in test_shards) == len(test) == 2 * 4
+
+
+@requires_cache
+def test_real_test_shards_partition_the_real_test_split(femnist_per_client):
+    train, test, shards, test_shards = femnist_per_client
+    assert len(shards) == len(test_shards) == 3400
+    union = np.concatenate(test_shards)
+    assert np.array_equal(np.sort(union), np.arange(len(test)))
+    assert all(s.size > 0 for s in test_shards), "a writer with no held-out data is unevaluable"
+    assert max(int(s.max()) for s in test_shards) < len(test)
+    assert max(int(s.max()) for s in shards) < len(train)
+
+
+@requires_cache
+def test_real_writers_test_labels_match_their_own_training_labels(femnist_per_client):
+    """Personalization's premise, measured rather than assumed.
+
+    A writer's held-out label profile must resemble that writer's training
+    profile far more than it resembles another writer's, or there would be
+    nothing for a local head to specialise to. The mismatched control is what
+    makes the number mean something.
+    """
+    train, test, shards, test_shards = femnist_per_client
+
+    def profile(labels, shard):
+        counts = label_distribution(labels, shard, FEMNIST_NUM_CLASSES).astype(float)
+        return counts / max(1.0, counts.sum())
+
+    matched, mismatched = [], []
+    for cid in range(0, 3400, 17):  # a spread sample; all 3,400 would be slow
+        p = profile(train.y, shards[cid])
+        matched.append(float(np.corrcoef(p, profile(test.y, test_shards[cid]))[0, 1]))
+        other = (cid + 811) % 3400
+        mismatched.append(float(np.corrcoef(p, profile(test.y, test_shards[other]))[0, 1]))
+
+    assert np.median(matched) > np.median(mismatched) + 0.1, (
+        np.median(matched),
+        np.median(mismatched),
+    )
