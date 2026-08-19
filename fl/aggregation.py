@@ -301,6 +301,36 @@ class DPFedAvgAggregator:
         return add(global_weights, mean_delta)
 
 
+def effective_sampling_rate(registered_clients: int, clients_per_round: int) -> float:
+    """The client sampling rate ``q`` the accountant must use, computed from the
+    clients that ACTUALLY registered — never from the configured population.
+
+    This is the correction to a real accounting bug. Epsilon depends on ``q``
+    through privacy amplification by subsampling: a *smaller* population sampled
+    at the same cohort size yields a *larger* ``q``, weaker amplification, and a
+    *larger* true epsilon. The mechanism's ``q`` is the fraction of the clients
+    the server can actually draw from — the registered set — so quoting
+    ``clients_per_round / configured_population`` when fewer clients registered
+    reports an epsilon smaller than the one delivered, i.e. it overstates the
+    privacy. The population is the registered count, the cohort is capped at it,
+    and ``q`` is their ratio:
+
+        q = min(registered, clients_per_round) / registered
+
+    Raises:
+        ValueError: if no clients registered; ``q`` is undefined over an empty
+            population and a DP run cannot proceed.
+    """
+    if registered_clients <= 0:
+        raise ValueError(
+            f"cannot compute a sampling rate over {registered_clients} registered clients"
+        )
+    if clients_per_round < 1:
+        raise ValueError(f"clients_per_round must be >= 1, got {clients_per_round}")
+    cohort = min(registered_clients, clients_per_round)
+    return cohort / registered_clients
+
+
 def compute_epsilon(
     noise_multiplier: float,
     sampling_rate: float,

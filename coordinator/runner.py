@@ -271,6 +271,11 @@ def _train_real(run_id: str, config_dict: dict, ctx: RunContext) -> None:
         loss, acc = evaluator.evaluate(test.x, test.y, batch_size=512, verbose=0)
         completed += 1
         final_acc, final_loss = float(acc), float(loss)
+        # q here is the configured rate, and correctly so: this in-process
+        # runner has no registration step -- every one of cfg.data.num_clients is
+        # present and sampled from, so the registered population IS the configured
+        # one. (The live gRPC server, where registration can be partial, derives q
+        # from the registered count instead; see fl.server.effective_sampling_rate.)
         epsilon = (
             compute_epsilon(
                 cfg.privacy.noise_multiplier,
