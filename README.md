@@ -107,8 +107,8 @@ flowchart TB
         API -->|"JSON events — never weights"| UI
     end
 
-    SEC["Pairwise-masking secure aggregation<br/>fl/secure_aggregation.py — protocol level,<br/>tested, NOT yet wired into either path"]
-    SEC -.->|"would hide individual updates"| AGG
+    SEC["Pairwise-masking secure aggregation<br/>fl/secure_aggregation.py + fl/secure_server.py<br/>WIRED into the no-DP live path (V3 RPCs)"]
+    SEC -.->|"hides individual updates from the server"| AGG
 
     C1 -->|"weights + sample count + model version"| RX
     CN -->|"weights + sample count + model version"| RX
@@ -124,8 +124,10 @@ Links ending in **✕** are the paths that deliberately do not exist: no client
 data reaches the server, and no test data reaches a client. Only model weights,
 a sample count and a model version cross the wire. The observability layer is
 a second protocol on purpose — JSON events outward, never weights — and the
-dashed secure-aggregation link marks the one component implemented and tested
-but not yet wired into either training path. Every completed run writes a
+dashed secure-aggregation link marks the masking path, now wired into the no-DP
+live training path (V3 clients submit masked updates; the server sums without
+seeing any one of them). Composing it with the *central* DP path needs
+distributed DP and is a Roadmap item. Every completed run writes a
 checkpoint both frameworks can load. The reasoning behind each of these
 seams: [docs/architecture.md](docs/architecture.md).
 
@@ -729,17 +731,22 @@ What remains true:
 - **No adversarial or Byzantine client handling.** Malformed payloads and
   stale versions are rejected — integrity checks, not a threat model. A
   well-formed malicious update aggregates like any other; there is no robust
-  aggregation rule and no authentication. Secure aggregation, once wired in,
+  aggregation rule and no authentication. Secure aggregation, now wired in,
   *widens* this: masking constrains nothing about the aggregate and is
   incompatible with rules that inspect individual updates
-  ([docs/secure_aggregation.md](docs/secure_aggregation.md)).
+  ([docs/privacy_threats.md](docs/privacy_threats.md),
+  [docs/secure_aggregation.md](docs/secure_aggregation.md)).
 
-- **Secure aggregation exists at protocol level, not in the deployed
-  paths.** Every recorded run still moves plaintext weights; the server
-  reads each update before averaging. Composing masking with the DP path is
-  a protocol change, not a flag — the TFF aggregator clips and noises
-  centrally, and true composition needs client-side clipping with
-  distributed noise ([docs/architecture.md](docs/architecture.md)).
+- **Secure aggregation is wired into the no-DP path only; it does not yet
+  compose with DP.** The masking protocol now runs on the live gRPC path — V3
+  clients submit masked updates and the server aggregates without seeing any
+  individual one, verified bit-exact on real weights. But it cannot run *with*
+  differential privacy: the TFF DP aggregator clips and noises centrally, after
+  seeing each update, which masking prevents. Composing them needs distributed DP
+  (client-side clipping, share-split or local noise), which changes the
+  accounting — a protocol change, not a flag
+  ([docs/architecture.md](docs/architecture.md),
+  [docs/privacy_threats.md](docs/privacy_threats.md)).
 
 Also true, and smaller: channels are `insecure_channel` with no TLS; server state
 is in memory and does not survive a restart (clients re-register and reclaim their
@@ -764,13 +771,18 @@ Nothing in this section is finished work — where groundwork already exists,
 the item says exactly which piece is missing. Each item addresses a
 limitation stated above and contradicts no claim made above it.
 
-- **Secure aggregation in the deployed paths.** The masking protocol itself
-  exists (pairwise masks, Shamir-backed dropout recovery, bit-exact sums —
-  [docs/secure_aggregation.md](docs/secure_aggregation.md)); what does not is
-  the wiring: the gRPC transport still moves plaintext weights, the TFF DP
-  path still clips centrally, and composing masking with DP means client-side
-  clipping plus distributed noise. Production cryptography (authenticated key
-  exchange, encrypted share transport) is a further, separate distance.
+- **Secure aggregation composed with DP (distributed DP).** The masking protocol
+  is now wired into the **no-DP** live path (V3 clients submit masked updates over
+  gRPC; the server sums without seeing any individual update; bit-exact on real
+  weights — [docs/secure_aggregation.md](docs/secure_aggregation.md)). What remains
+  is composing it with differential privacy: the TFF DP path clips and noises
+  *centrally*, after seeing each update, so composition requires **distributed
+  DP** — client-side clipping plus share-split or local noise — which changes the
+  accounting (Gboard runs this in production;
+  [docs/privacy_threats.md](docs/privacy_threats.md)). Production cryptography
+  (authenticated key exchange, encrypted share transport) and SecAgg+'s sparse
+  neighbour graphs, the O(m log m) answer to the current O(m²) all-pairs masking,
+  are further, separate distances.
 - **Robust aggregation rules** (coordinate-wise median, trimmed mean, Krum) and
   update-poisoning detection, to give the system an actual threat model.
 - **Client authentication and TLS**, replacing `insecure_channel` and the
