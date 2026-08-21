@@ -6,6 +6,10 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: 5173,
+    // Story stage 4 imports docs/inversion/ directly, so the real
+    // reconstructions can be dropped in as a file copy with no build step and
+    // no second copy of the images living under the dashboard.
+    fs: { allow: [".."] },
     // The coordinator API. Dev proxy so the browser talks same-origin.
     proxy: {
       "/api": {
