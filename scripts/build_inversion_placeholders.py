@@ -113,7 +113,9 @@ def main() -> int:
         "entries": entries,
     }
     (OUT / "manifest.json").write_text(
-        json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+        newline="\n",
     )
     print(f"wrote {OUT / 'manifest.json'} and {2 * len(entries)} panels")
     return 0

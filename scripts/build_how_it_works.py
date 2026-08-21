@@ -798,7 +798,9 @@ def build() -> str:
 
 
 def main() -> int:
-    OUT.write_text(build(), encoding="utf-8")
+    # Explicit LF, so the bytes are identical on Windows and Linux; .gitattributes
+    # pins this file to LF and the drift test compares bytes.
+    OUT.write_text(build(), encoding="utf-8", newline="\n")
     print(f"wrote {OUT} — {OUT.stat().st_size:,} bytes")
     return 0
 
