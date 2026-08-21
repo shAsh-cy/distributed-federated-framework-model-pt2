@@ -75,3 +75,28 @@ html {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ---------------------------------------------------------------------------
+ * Story mode extends this language; it does not introduce a second one. No new
+ * hues, no new type families — only a reading measure, a caption rule, and the
+ * one reduced-motion escape hatch the stages need.
+ * ------------------------------------------------------------------------- */
+
+/* Narrative text is read, not scanned: a measure, not a full-width line. */
+.story-measure {
+  max-width: 62ch;
+}
+
+/* Captions are permanent furniture, never a hover affordance. */
+.story-caption {
+  border-left: 2px solid var(--ink);
+  padding-left: 0.75rem;
+}
+
+/* Stages ask "is motion off?" in JS as well as CSS; this keeps the two in
+ * step by giving the reduced-motion branch something to assert against. */
+@media (prefers-reduced-motion: reduce) {
+  [data-story-stage] {
+    --story-motion: none;
+  }
+}

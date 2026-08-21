@@ -18,15 +18,31 @@
  * (SVG paths, not DOM-per-client) with the sampled cohort still resolved
  * individually. Reduced motion collapses every animation to instant state
  * changes with no information loss.
+ *
+ * Two motion profiles share this one component. "instrument" is the console's:
+ * terse, quick, out of the way. "story" is the guided walkthrough's: the same
+ * protocol, the same geometry, the same data — animated with mass. Nodes
+ * overshoot and settle when the teacher calls on them, updates arrive with
+ * momentum instead of sliding, the merge lands with weight. No second topology
+ * exists; the explainer animates this one with more intent.
  */
 import { motion, useReducedMotion } from "framer-motion";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import type { ClientState, RunState } from "../lib/events";
 
 const RING_THRESHOLD = 60;
 
-type NodePlacement = { id: string; x: number; y: number; angle: number };
+export type NodePlacement = { id: string; x: number; y: number; angle: number };
+
+/** Geometry handed to an overlay so it can draw in the topology's own frame. */
+export type TopologyGeometry = { size: number; radius: number; placements: NodePlacement[] };
+
+export type MotionProfile = "instrument" | "story";
+
+/** Mass, overshoot, settle. The one place the story's physics is tuned. */
+const STORY_SPRING = { type: "spring", stiffness: 140, damping: 11, mass: 1.1 } as const;
+const STORY_ARRIVAL = { type: "spring", stiffness: 60, damping: 14, mass: 1 } as const;
 
 function placeNodes(ids: string[], radius: number): NodePlacement[] {
   return ids.map((id, i) => {
@@ -171,14 +187,26 @@ export function Topology({
   highlightRound,
   onPin,
   pinned,
+  motionProfile = "instrument",
+  overlay,
+  showDetail = true,
+  forceRing = false,
 }: {
   run: RunState;
   highlightRound: number | null;
   onPin: (clientId: string | null) => void;
   pinned: string | null;
+  /** "story" swaps eased tweens for springs; see STORY_SPRING. */
+  motionProfile?: MotionProfile;
+  /** Drawn inside the SVG, above the edges and below the nodes. */
+  overlay?: (geometry: TopologyGeometry) => ReactNode;
+  showDetail?: boolean;
+  /** Story mode narrates the ring even on a phone; the list view loses it. */
+  forceRing?: boolean;
 }) {
   const reduced = useReducedMotion();
-  const narrow = useNarrowViewport();
+  const narrow = useNarrowViewport() && !forceRing;
+  const story = motionProfile === "story";
   const [hovered, setHovered] = useState<string | null>(null);
   const [focusIndex, setFocusIndex] = useState(0);
   const containerRef = useRef<SVGSVGElement>(null);
@@ -262,6 +290,8 @@ export function Topology({
     return <TopologyList run={run} onPin={onPin} pinned={pinned} />;
   }
 
+  const geometry: TopologyGeometry = { size, radius, placements };
+
   return (
     <div className="flex flex-col gap-2 lg:flex-row lg:items-start">
       <svg
@@ -302,15 +332,15 @@ export function Topology({
               {/* the update travelling inward, staggered by real arrival order */}
               {c.phase === "reported" && !reduced ? (
                 <motion.circle
-                  r={3.2}
+                  r={story ? Math.min(6, 1.6 + bytes / 320_000) : 3.2}
                   fill="var(--client)"
                   initial={{ cx: x, cy: y, opacity: 0 }}
                   animate={{ cx: 0, cy: 0, opacity: [0, 1, 1, 0] }}
-                  transition={{
-                    duration: 0.9,
-                    delay: (c.arrivalOrder ?? 0) * 0.18,
-                    ease: "easeIn",
-                  }}
+                  transition={
+                    story
+                      ? { ...STORY_ARRIVAL, delay: (c.arrivalOrder ?? 0) * 0.28 }
+                      : { duration: 0.9, delay: (c.arrivalOrder ?? 0) * 0.18, ease: "easeIn" }
+                  }
                 />
               ) : null}
             </g>
@@ -324,14 +354,15 @@ export function Topology({
           width={28}
           height={28}
           fill="var(--global)"
+          style={story ? { transformOrigin: "center", transformBox: "fill-box" } : undefined}
           animate={
             reduced
               ? undefined
               : aggregatedThisRound
-                ? { scale: [1, 1.25, 1] }
+                ? { scale: story ? [1, 1.55, 1] : [1, 1.25, 1] }
                 : { scale: 1 }
           }
-          transition={{ duration: 0.5 }}
+          transition={story ? { ...STORY_SPRING, damping: 7 } : { duration: 0.5 }}
           aria-label="Aggregator"
         />
         {/* new model propagating outward to ALL nodes after aggregation */}
@@ -342,8 +373,8 @@ export function Topology({
             stroke="var(--global)"
             strokeWidth={1.5}
             initial={{ r: 16, opacity: 0.8 }}
-            animate={{ r: radius, opacity: 0 }}
-            transition={{ duration: 0.8, ease: "easeOut" }}
+            animate={{ r: radius + (story ? 34 : 0), opacity: 0 }}
+            transition={story ? { duration: 1.5, ease: "easeOut" } : { duration: 0.8, ease: "easeOut" }}
           />
         ) : null}
 
@@ -367,25 +398,59 @@ export function Topology({
               aria-label={`${id}: ${c.info.num_examples} examples, ${c.phase}`}
               style={{ cursor: "pointer" }}
             >
-              <motion.circle
-                r={16}
-                fill="var(--ground-raised)"
-                stroke={isPinned || isFocus ? "var(--global)" : colour}
-                strokeWidth={isPinned ? 3 : isFocus ? 2.5 : active ? 2 : 1}
-                opacity={c.phase === "dropped" ? 0.45 : 1}
-                animate={
-                  reduced
-                    ? undefined
-                    : c.phase === "sampled"
-                      ? { scale: [1, 1.12, 1] }
-                      : { scale: 1 }
-                }
-                transition={
-                  c.phase === "sampled"
-                    ? { repeat: Infinity, duration: pulseDuration, ease: "easeInOut" }
-                    : { duration: 0.2 }
-                }
-              />
+              {story ? (
+                // Two layers, because the story asks the node to say two
+                // things at once: WEIGHT when the teacher calls on it (a
+                // spring that overshoots and settles), and HOW LONG the
+                // student studies (a breath whose period is that client's
+                // measured wall-clock). One property cannot carry both.
+                <motion.g
+                  style={{ transformOrigin: "center", transformBox: "fill-box" }}
+                  animate={{
+                    scale: reduced ? 1 : active ? 1.18 : c.phase === "dropped" ? 0.88 : 1,
+                  }}
+                  transition={STORY_SPRING}
+                >
+                  <motion.circle
+                    r={16}
+                    fill="var(--ground-raised)"
+                    stroke={isPinned || isFocus ? "var(--global)" : colour}
+                    strokeWidth={isPinned ? 3 : isFocus ? 2.5 : active ? 2 : 1}
+                    animate={
+                      reduced
+                        ? { opacity: c.phase === "dropped" ? 0.45 : 1 }
+                        : c.phase === "sampled"
+                          ? { opacity: [1, 0.55, 1] }
+                          : { opacity: c.phase === "dropped" ? 0.45 : 1 }
+                    }
+                    transition={
+                      !reduced && c.phase === "sampled"
+                        ? { repeat: Infinity, duration: pulseDuration, ease: "easeInOut" }
+                        : { duration: 0.25 }
+                    }
+                  />
+                </motion.g>
+              ) : (
+                <motion.circle
+                  r={16}
+                  fill="var(--ground-raised)"
+                  stroke={isPinned || isFocus ? "var(--global)" : colour}
+                  strokeWidth={isPinned ? 3 : isFocus ? 2.5 : active ? 2 : 1}
+                  opacity={c.phase === "dropped" ? 0.45 : 1}
+                  animate={
+                    reduced
+                      ? undefined
+                      : c.phase === "sampled"
+                        ? { scale: [1, 1.12, 1] }
+                        : { scale: 1 }
+                  }
+                  transition={
+                    c.phase === "sampled"
+                      ? { repeat: Infinity, duration: pulseDuration, ease: "easeInOut" }
+                      : { duration: 0.2 }
+                  }
+                />
+              )}
               <NodeHistogram counts={c.info.label_histogram} size={20} colour={colour} />
               <text
                 y={26}
@@ -401,6 +466,10 @@ export function Topology({
             </g>
           );
         })}
+        {/* Drawn last: a story overlay is annotation, and annotation sits on
+            top of the thing it annotates. */}
+        {overlay ? overlay(geometry) : null}
+
         {dense ? (
           <text
             y={size / 2 - 8}
@@ -415,6 +484,7 @@ export function Topology({
       </svg>
 
       {/* hover / pin detail panel */}
+      {showDetail ? (
       <aside
         aria-live="polite"
         className="min-w-[180px] border border-rule bg-ground-raised p-3 lg:mt-6"
@@ -464,6 +534,7 @@ export function Topology({
           </p>
         )}
       </aside>
+      ) : null}
     </div>
   );
 }
