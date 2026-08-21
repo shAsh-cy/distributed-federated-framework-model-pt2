@@ -1,9 +1,15 @@
 /**
  * Application shell: masthead, view tabs, status line. Four views, no
  * router dependency — the view is state, the shell is an instrument fascia.
+ *
+ * One exception: /story is a real route, because a guided walkthrough is the
+ * thing you send someone a link to. src/lib/route.ts is the whole router.
  */
 import { useState } from "react";
 
+import { useRoute } from "./lib/route";
+import { StoryMode } from "./story/StoryMode";
+import { Button } from "./ui/primitives";
 import { ConfigureView } from "./views/Configure";
 import { ConsoleView } from "./views/Console";
 import { HistoryView } from "./views/History";
@@ -23,6 +29,9 @@ export function App() {
   const [view, setView] = useState<ViewName>("console");
   // The run the console observes; set by Configure on start or History on open.
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const [route, navigate] = useRoute();
+
+  if (route === "story") return <StoryMode onExit={() => navigate("dashboard")} />;
 
   return (
     <div className="mx-auto flex min-h-screen max-w-6xl flex-col px-4">
@@ -30,10 +39,29 @@ export function App() {
         <h1 className="font-head text-xl uppercase tracking-head">
           Federated Learning Coordinator
         </h1>
-        <span className="readout text-xs text-slate">
-          gRPC inside · HTTP/WS outside · every number measured
-        </span>
+        <div className="flex items-center gap-4">
+          <span className="readout hidden text-xs text-slate sm:inline">
+            gRPC inside · HTTP/WS outside · every number measured
+          </span>
+          <Button
+            tone="primary"
+            onClick={() => navigate("story")}
+            aria-label="Open the guided walkthrough of how federated learning works"
+          >
+            Start here ▸ Story
+          </Button>
+        </div>
       </header>
+
+      <p className="border-b border-rule py-2 font-prose text-sm text-slate">
+        New to this? <button
+          className="underline decoration-rule underline-offset-4 hover:text-global"
+          onClick={() => navigate("story")}
+        >
+          Take the six-stage walkthrough
+        </button>{" "}
+        — a recorded run, narrated, with every number sourced.
+      </p>
 
       <nav aria-label="Views" className="flex gap-1 border-b border-rule">
         {VIEWS.map((name) => (
