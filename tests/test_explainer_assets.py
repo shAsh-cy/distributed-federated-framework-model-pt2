@@ -27,7 +27,9 @@ from __future__ import annotations
 
 import json
 import re
+import struct
 import sys
+import zlib
 from pathlib import Path
 
 import pytest
@@ -56,6 +58,28 @@ OPTIONAL_ENTRY_FIELDS: dict[str, tuple[type, ...]] = {
 }
 
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+
+
+def png_raster(path: Path) -> tuple[bytes, bytes]:
+    """(IHDR, decompressed pixel data) for a PNG, using stdlib only.
+
+    Compressed bytes are the wrong thing to compare between machines: deflate
+    output depends on the zlib build, and CI's is not this laptop's. The raster
+    is the thing that is actually supposed to be identical.
+    """
+    blob = path.read_bytes()
+    assert blob[:8] == PNG_MAGIC, f"{path.name} is not a PNG"
+    header, pixels, offset = b"", b"", 8
+    while offset < len(blob):
+        (length,) = struct.unpack(">I", blob[offset : offset + 4])
+        tag = blob[offset + 4 : offset + 8]
+        payload = blob[offset + 8 : offset + 8 + length]
+        if tag == b"IHDR":
+            header = payload
+        elif tag == b"IDAT":
+            pixels += payload
+        offset += 12 + length
+    return header, zlib.decompress(pixels)
 
 
 @pytest.fixture(scope="module")
@@ -135,11 +159,16 @@ class TestInversionManifest:
             pytest.skip("the real reconstructions have landed; nothing here is generated")
         import build_inversion_placeholders as generator
 
-        before = {p.name: p.read_bytes() for p in sorted(MANIFEST_PATH.parent.glob("*.png"))}
-        before[MANIFEST_PATH.name] = MANIFEST_PATH.read_bytes()
+        def snapshot() -> dict[str, object]:
+            state: dict[str, object] = {
+                path.name: png_raster(path) for path in sorted(MANIFEST_PATH.parent.glob("*.png"))
+            }
+            state[MANIFEST_PATH.name] = MANIFEST_PATH.read_bytes()
+            return state
+
+        before = snapshot()
         generator.main()
-        after = {p.name: p.read_bytes() for p in sorted(MANIFEST_PATH.parent.glob("*.png"))}
-        after[MANIFEST_PATH.name] = MANIFEST_PATH.read_bytes()
+        after = snapshot()
         assert after == before, (
             "docs/inversion/ has been hand-edited while still marked placeholder. "
             "Either run scripts/build_inversion_placeholders.py, or set placeholder "
@@ -225,9 +254,20 @@ class TestStandalonePage:
 
         before = PAGE_PATH.read_bytes()
         generator.main()
-        assert PAGE_PATH.read_bytes() == before, (
-            "docs/how-it-works.html is stale. Run: python scripts/build_how_it_works.py"
-        )
+        after = PAGE_PATH.read_bytes()
+        if after != before:
+            at = next(
+                (i for i, (a, b) in enumerate(zip(after, before, strict=False)) if a != b),
+                min(len(after), len(before)),
+            )
+            window = slice(max(0, at - 90), at + 90)
+            raise AssertionError(
+                "docs/how-it-works.html is stale, or this machine generates it differently.\n"
+                f"first difference at byte {at} of {len(before)}\n"
+                f"committed: ...{before[window]!r}...\n"
+                f"generated: ...{after[window]!r}...\n"
+                "Run: python scripts/build_how_it_works.py"
+            )
 
     def test_fetches_nothing(self):
         """Every src, every stylesheet, every font: inline or a data URI. The
@@ -253,6 +293,26 @@ class TestStandalonePage:
         for name in ("nodpFinal", "dpFinal", "dpCost", "epsilon", "pooled", "longRoundsAcc"):
             display = figures[name]["display"]
             assert display in page, f"the page never shows {name} ({display})"
+
+    def test_the_notebook_sampler_is_the_same_on_every_interpreter(self):
+        """The three heterogeneity pictures are floating point and the page is
+        compared byte for byte, so the sampler behind them has to give the same
+        answer on every interpreter. random.gammavariate does not — its
+        implementation has changed between CPython versions, which silently
+        redeals these three pictures and fails the drift test above with no
+        clue why. build_how_it_works therefore rolls its own on top of Mersenne
+        Twister, and this pins it.
+        """
+        import random
+
+        import build_how_it_works as generator
+
+        rng = random.Random(42)
+        draws = [generator.gamma_draw(rng, 0.5) for _ in range(4)]
+        assert draws == pytest.approx(
+            [0.312735047405, 1.128012610588, 0.324311843026, 0.000251132746], abs=1e-11
+        )
+        assert generator.deal(0.5)[0] == [24, 123, 6, 131, 1, 151, 144, 7, 9, 49]
 
     def test_the_engineers_appendix_points_at_documents_that_exist(self):
         import build_how_it_works as generator

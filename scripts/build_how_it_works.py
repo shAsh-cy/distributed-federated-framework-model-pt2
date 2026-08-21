@@ -188,17 +188,50 @@ def classroom_svg(*, show_round: bool) -> str:
 STUDENTS, CHAPTERS, PER_CHAPTER = 10, 10, 600
 
 
+def gamma_draw(rng: random.Random, shape: float) -> float:
+    """Marsaglia-Tsang Gamma(shape, 1), on top of rng.random() alone.
+
+    NOT random.gammavariate, deliberately. This page is committed and a test
+    regenerates it and compares bytes, so every number in it has to come out
+    the same on every interpreter — and gammavariate's implementation has
+    changed between CPython versions, which silently redeals these three
+    pictures. Mersenne Twister's random() has not changed and will not.
+
+    Same algorithm as dashboard/src/lib/dirichlet.ts, down to the order the
+    uniforms are consumed.
+    """
+    if shape < 1:
+        u = max(rng.random(), 1e-12)
+        return gamma_draw(rng, shape + 1) * u ** (1 / shape)
+    d = shape - 1 / 3
+    c = 1 / math.sqrt(9 * d)
+    while True:
+        while True:
+            u1 = max(rng.random(), 1e-12)
+            u2 = rng.random()
+            x = math.sqrt(-2 * math.log(u1)) * math.cos(2 * math.pi * u2)
+            v = 1 + c * x
+            if v > 0:
+                break
+        v = v * v * v
+        u = max(rng.random(), 1e-12)
+        if u < 1 - 0.0331 * x * x * x * x:
+            return d * v
+        if math.log(u) < 0.5 * x * x + d * (1 - v + math.log(v)):
+            return d * v
+
+
 def deal(alpha: float, seed: int = 42) -> list[list[int]]:
     """Dirichlet(alpha) proportions per chapter, dealt to the students.
 
-    Same construction as fl/data.py::partition_dirichlet — these are three
-    still frames, so the story-mode coupling that makes dragging smooth is not
-    needed and stdlib gammavariate is exactly the right sampler.
+    Same construction as fl/data.py::partition_dirichlet. These are three still
+    frames, so the coupling that makes story mode's slider morph rather than
+    redeal is not needed here — only determinism is, hence gamma_draw above.
     """
     rng = random.Random(seed)
     grid = [[0] * CHAPTERS for _ in range(STUDENTS)]
     for chapter in range(CHAPTERS):
-        weights = [rng.gammavariate(alpha, 1.0) for _ in range(STUDENTS)]
+        weights = [gamma_draw(rng, alpha) for _ in range(STUDENTS)]
         total = sum(weights) or 1.0
         dealt = 0
         for student in range(STUDENTS - 1):
