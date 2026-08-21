@@ -61,6 +61,14 @@ def grouped(value: float) -> str:
     return f"{int(value):,}"
 
 
+def pct0(value: float) -> str:
+    return f"{value * 100:.0f} %"
+
+
+def fixed2(value: float) -> str:
+    return f"{value:.2f}"
+
+
 def exponent(value: float) -> str:
     return f"1e{round(math.log10(value))}"
 
@@ -73,6 +81,8 @@ FORMATS = {
     "integer": integer,
     "grouped": grouped,
     "exponent": exponent,
+    "pct0": pct0,
+    "fixed2": fixed2,
 }
 
 BATCH_B = "docs/_final_batch_b.json"
@@ -177,7 +187,41 @@ SERIES: list[tuple[str, str, str, str, str]] = [
         "accuracy",
         "Per-round accuracy without DP, same cohort and rounds, averaged over seeds.",
     ),
+    (
+        "clippedFraction",
+        BATCH_B,
+        "/runs",
+        "clipped_fraction",
+        "Share of the cohort whose update was long enough to be trimmed, per round.",
+    ),
+    (
+        "medianNorm",
+        BATCH_B,
+        "/runs",
+        "median_pre_clip_norm",
+        "Median length of an update before trimming, per round.",
+    ),
 ]
+
+# Scalars read off a series. name, series, reducer, format, meaning.
+DERIVED: list[tuple[str, str, str, str, str]] = [
+    (
+        "clippedFinal",
+        "clippedFraction",
+        "last",
+        "pct0",
+        "Share of corrections trimmed in the last round of the DP run.",
+    ),
+    (
+        "medianNormFinal",
+        "medianNorm",
+        "last",
+        "fixed2",
+        "Median update length in the last round of the DP run, against the trim line.",
+    ),
+]
+
+REDUCERS = {"last": lambda xs: xs[-1], "mean": fmean}
 
 
 def load(relative: str) -> Any:
@@ -219,6 +263,21 @@ def main() -> int:
                 "pointer": pointer,
                 "field": field,
                 "reduce": "mean_over_seeds",
+            },
+        }
+
+    for name, source_series, reducer, fmt, meaning in DERIVED:
+        points = series[source_series]["points"]
+        derived_value = REDUCERS[reducer](points)
+        figures[name] = {
+            "value": derived_value,
+            "display": FORMATS[fmt](derived_value),
+            "format": fmt,
+            "meaning": meaning,
+            "source": {
+                **series[source_series]["source"],
+                "series": source_series,
+                "reduce_series": reducer,
             },
         }
 

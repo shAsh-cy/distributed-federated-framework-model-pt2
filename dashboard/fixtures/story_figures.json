@@ -161,6 +161,34 @@
         "file": "results/no_dp.json",
         "pointer": "/final/accuracy"
       }
+    },
+    "clippedFinal": {
+      "value": 0.4716666666666667,
+      "display": "47 %",
+      "format": "pct0",
+      "meaning": "Share of corrections trimmed in the last round of the DP run.",
+      "source": {
+        "file": "docs/_final_batch_b.json",
+        "pointer": "/runs",
+        "field": "clipped_fraction",
+        "reduce": "mean_over_seeds",
+        "series": "clippedFraction",
+        "reduce_series": "last"
+      }
+    },
+    "medianNormFinal": {
+      "value": 1.9548107416288572,
+      "display": "1.95",
+      "format": "fixed2",
+      "meaning": "Median update length in the last round of the DP run, against the trim line.",
+      "source": {
+        "file": "docs/_final_batch_b.json",
+        "pointer": "/runs",
+        "field": "median_pre_clip_norm",
+        "reduce": "mean_over_seeds",
+        "series": "medianNorm",
+        "reduce_series": "last"
+      }
     }
   },
   "series": {
@@ -233,6 +261,78 @@
         "file": "docs/_femnist_budget_e.json",
         "pointer": "/budget/cells/2/runs",
         "field": "accuracy",
+        "reduce": "mean_over_seeds"
+      }
+    },
+    "clippedFraction": {
+      "points": [
+        0.0033333333333333335,
+        0.0,
+        0.013333333333333334,
+        0.21999999999999997,
+        0.8483333333333333,
+        0.9666666666666667,
+        0.9783333333333334,
+        0.9700000000000001,
+        0.8916666666666666,
+        0.7933333333333333,
+        0.7066666666666667,
+        0.665,
+        0.605,
+        0.5983333333333333,
+        0.58,
+        0.5333333333333333,
+        0.5483333333333333,
+        0.48500000000000004,
+        0.51,
+        0.4716666666666667
+      ],
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "meaning": "Share of the cohort whose update was long enough to be trimmed, per round.",
+      "source": {
+        "file": "docs/_final_batch_b.json",
+        "pointer": "/runs",
+        "field": "clipped_fraction",
+        "reduce": "mean_over_seeds"
+      }
+    },
+    "medianNorm": {
+      "points": [
+        1.2975327375569183,
+        0.8322642649339281,
+        0.9360331474933821,
+        1.4266996534068772,
+        2.495087137426637,
+        2.6988127782012,
+        2.5933942348462686,
+        2.5316769523535023,
+        2.456788971763212,
+        2.39271819710338,
+        2.3618479305483273,
+        2.350311072477233,
+        2.2129637812537815,
+        2.155377264595541,
+        2.1768906146536886,
+        2.0650089779175858,
+        2.096724223122523,
+        1.987037951670607,
+        2.002249561160106,
+        1.9548107416288572
+      ],
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "meaning": "Median length of an update before trimming, per round.",
+      "source": {
+        "file": "docs/_final_batch_b.json",
+        "pointer": "/runs",
+        "field": "median_pre_clip_norm",
         "reduce": "mean_over_seeds"
       }
     }

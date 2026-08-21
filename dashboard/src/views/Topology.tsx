@@ -378,8 +378,6 @@ export function Topology({
           />
         ) : null}
 
-        {overlay ? overlay(geometry) : null}
-
         {/* nodes */}
         {placements.map(({ id, x, y }, index) => {
           const c = run.clients.get(id);
@@ -468,6 +466,10 @@ export function Topology({
             </g>
           );
         })}
+        {/* Drawn last: a story overlay is annotation, and annotation sits on
+            top of the thing it annotates. */}
+        {overlay ? overlay(geometry) : null}
+
         {dense ? (
           <text
             y={size / 2 - 8}
