@@ -29,6 +29,24 @@ data.
 trained by the coordinator, streamed over a real WebSocket — the topology,
 curves and privacy-budget meter draw from real events end to end.*
 
+### New here? Start with the walkthrough
+
+![Story mode: the six-stage walkthrough](docs/story_mode.gif)
+
+*Story mode (`/story` in the dashboard, or the button in the masthead): six
+narrated stages driven by a recorded run — the problem, one round, why
+heterogeneity is the hard part, an attack that rebuilds a client's data from
+its update alone, the defence that stops it, and what that defence costs. The
+classroom framing simplifies the language; every number in it is the measured
+one, pulled from the results files below through a generated figures file that
+carries a JSON pointer per value.*
+
+There is also **[docs/how-it-works.html](docs/how-it-works.html)** — the same
+six stages as a single self-contained page written for a curious twelve-year-old,
+with a *For engineers* appendix mapping every analogy back to the mechanism.
+One file, no build step, no external request: save it and open it, or send it
+to someone.
+
 Design rationale — every major decision and the alternative it beat — lives in
 **[docs/architecture.md](docs/architecture.md)**, which ends with
 [what the v0.2 audit found](docs/architecture.md#what-the-audit-found--three-bugs-unit-tests-structurally-could-not-catch):
