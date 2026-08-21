@@ -14,7 +14,9 @@ Three things this file is responsible for.
    generated from committed results. Both are committed too, because the
    dashboard imports one and the other has to open on a double-click with no
    build step. That means both can drift, so both are regenerated here and
-   compared byte for byte.
+   compared. Images are compared by raster rather than by compressed bytes:
+   deflate output is a property of the zlib build, not of the artefact, and a
+   guard that fires on the runner's zlib is a guard nobody keeps.
 
 3. docs/how-it-works.html must fetch nothing. It is going to be emailed and
    opened from file://; one stray CDN reference and it renders wrong on the
@@ -25,6 +27,8 @@ No TensorFlow, no training, no network.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import re
 import struct
@@ -60,15 +64,14 @@ OPTIONAL_ENTRY_FIELDS: dict[str, tuple[type, ...]] = {
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
 
-def png_raster(path: Path) -> tuple[bytes, bytes]:
+def png_raster(blob: bytes) -> tuple[bytes, bytes]:
     """(IHDR, decompressed pixel data) for a PNG, using stdlib only.
 
     Compressed bytes are the wrong thing to compare between machines: deflate
     output depends on the zlib build, and CI's is not this laptop's. The raster
     is the thing that is actually supposed to be identical.
     """
-    blob = path.read_bytes()
-    assert blob[:8] == PNG_MAGIC, f"{path.name} is not a PNG"
+    assert blob[:8] == PNG_MAGIC, "not a PNG"
     header, pixels, offset = b"", b"", 8
     while offset < len(blob):
         (length,) = struct.unpack(">I", blob[offset : offset + 4])
@@ -80,6 +83,34 @@ def png_raster(path: Path) -> tuple[bytes, bytes]:
             pixels += payload
         offset += 12 + length
     return header, zlib.decompress(pixels)
+
+
+def raster_digest(blob: bytes) -> str:
+    header, pixels = png_raster(blob)
+    return hashlib.sha256(header + pixels).hexdigest()
+
+
+DATA_URI = re.compile(rb"data:image/png;base64,([A-Za-z0-9+/=]+)")
+
+
+def with_images_by_content(page: bytes) -> bytes:
+    """The page, with each inlined PNG replaced by a digest of its raster.
+
+    docs/how-it-works.html embeds its images as base64, so comparing the page
+    byte for byte also compares deflate output — which, as above, is a property
+    of the zlib build rather than of the page. Normalising the payloads keeps
+    the comparison on the thing that matters: the page's text is current and its
+    pictures are the right pictures. That the digests are the MANIFEST's
+    pictures is asserted separately below.
+    """
+    return DATA_URI.sub(
+        lambda match: (
+            b"data:image/png;base64,<raster "
+            + raster_digest(base64.b64decode(match.group(1))).encode()
+            + b">"
+        ),
+        page,
+    )
 
 
 @pytest.fixture(scope="module")
@@ -161,7 +192,8 @@ class TestInversionManifest:
 
         def snapshot() -> dict[str, object]:
             state: dict[str, object] = {
-                path.name: png_raster(path) for path in sorted(MANIFEST_PATH.parent.glob("*.png"))
+                path.name: png_raster(path.read_bytes())
+                for path in sorted(MANIFEST_PATH.parent.glob("*.png"))
             }
             state[MANIFEST_PATH.name] = MANIFEST_PATH.read_bytes()
             return state
@@ -252,9 +284,9 @@ class TestStandalonePage:
     def test_regenerates_identically(self):
         import build_how_it_works as generator
 
-        before = PAGE_PATH.read_bytes()
+        before = with_images_by_content(PAGE_PATH.read_bytes())
         generator.main()
-        after = PAGE_PATH.read_bytes()
+        after = with_images_by_content(PAGE_PATH.read_bytes())
         if after != before:
             at = next(
                 (i for i, (a, b) in enumerate(zip(after, before, strict=False)) if a != b),
@@ -293,6 +325,27 @@ class TestStandalonePage:
         for name in ("nodpFinal", "dpFinal", "dpCost", "epsilon", "pooled", "longRoundsAcc"):
             display = figures[name]["display"]
             assert display in page, f"the page never shows {name} ({display})"
+
+    def test_the_inlined_images_are_the_manifest_images(self):
+        """The drift test above compares the page's pictures by raster digest,
+        which proves they have not changed. This is what proves they are the
+        right ones — the four the manifest names, and nothing else."""
+        page = PAGE_PATH.read_bytes()
+        embedded = {raster_digest(base64.b64decode(match)) for match in DATA_URI.findall(page)}
+        expected = {
+            raster_digest((MANIFEST_PATH.parent / name).read_bytes())
+            for name in sorted(
+                {
+                    entry[field]
+                    for entry in json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))["entries"]
+                    for field in ("original_png", "reconstruction_png")
+                }
+            )
+        }
+        assert embedded == expected, (
+            "docs/how-it-works.html has images that are not the manifest's. "
+            "Run: python scripts/build_how_it_works.py"
+        )
 
     def test_the_notebook_sampler_is_the_same_on_every_interpreter(self):
         """The three heterogeneity pictures are floating point and the page is
